@@ -25,8 +25,8 @@ The Interactive JSON Visualizer is a powerful web-based tool that transforms com
 ### Setup
 1. Clone the repository:
 ```bash
-git clone [repository-url]
-cd json-visualizer
+git clone https://github.com/GhoshSrinjoy/Json-Visualizer.git
+cd Json-Visualizer
 ```
 
 2. Install required packages:
