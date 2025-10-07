@@ -1,20 +1,59 @@
-## Overview
-The Interactive JSON Visualizer is a powerful web-based tool that transforms complex JSON data structures into interactive, visual node graphs. Built with Streamlit and Pyvis, it provides an intuitive way to explore and understand JSON data through a dynamic, user-friendly interface.
+*“Ever tried scrolling through nested JSON? It’s like opening Russian dolls that throw key errors.”*  
 
-## Features
-- **Interactive Visualization**: Drag-and-drop nodes, zoom, and pan functionality
-- **Multiple Input Methods**: 
-  - Direct JSON text input
-  - File upload support (.json, .csv, .xlsx)
-- **Visual Enhancement**:
-  - Color-coded nodes based on data types
-  - Clear hierarchical structure
-  - Dark theme for better visibility
-- **User-Friendly Interface**:
-  - Split-panel layout
-  - Example JSON for quick testing
-  - Download functionality
-  - Error handling and validation
+# 🧠 Interactive JSON Visualizer  
+
+A web-based app that turns tangled JSON data into a beautiful, interactive network graph.  
+Built with **Streamlit** and **Pyvis**, it helps you actually *see* your data , not just scroll through brackets.  
+
+🔗 **Repo:** https://github.com/GhoshSrinjoy/Json-Visualizer  
+
+---
+
+## Executive Summary  
+
+The Interactive JSON Visualizer is designed for developers, analysts, and anyone who’s ever thought,  
+“Wait, where does this key even live?”  
+
+It reads your JSON, builds a hierarchical graph, and lets you explore the structure visually , complete with color-coded nodes, drag interactions, and file upload support.  
+
+---
+
+## Features  
+
+✅ **Interactive Visualization** – Drag, zoom, and pan across nodes to explore structure.  
+📂 **Multiple Input Options** – Paste raw JSON or upload `.json`, `.csv`, or `.xlsx` files.  
+🎨 **Smart Visual Design** – Color-coded nodes by data type, dark theme, and clear hierarchies.  
+💡 **Ease of Use** – Example JSON, split-panel layout, instant updates, and error validation.  
+⬇️ **Export-Ready** – Download processed JSON anytime.  
+
+---
+
+## Methodology  
+
+### 1️⃣ Input Handling  
+- Users can paste JSON text directly or upload a file.  
+- The system parses and validates the data automatically.  
+
+### 2️⃣ Graph Generation  
+- Using **NetworkX** + **Pyvis**, each key-value pair is mapped into a **node-edge graph**.  
+- Parent-child relationships are visually linked for better structure understanding.  
+
+### 3️⃣ Rendering & Interaction  
+- The graph is rendered in a **Streamlit** interface.  
+- Nodes are draggable, zoomable, and highlight on hover for detail view.  
+
+---
+
+## Color Coding  
+
+| Data Type | Color |
+|------------|--------|
+| Object (dict) | 🔵 Blue |
+| Array (list) | 🟣 Indigo |
+| String | 🟢 Green |
+| Number | 🟠 Orange |
+| Boolean | 🟪 Purple |
+| Null | ⚪ Gray |
 
 ## Installation
 
