@@ -5,9 +5,6 @@
 A web-based app that turns tangled JSON data into a beautiful, interactive network graph.  
 Built with **Streamlit** and **Pyvis**, it helps you actually *see* your data , not just scroll through brackets.  
 
-🔗 **Repo:** https://github.com/GhoshSrinjoy/Json-Visualizer  
-
----
 
 ## Executive Summary  
 
