@@ -1,0 +1,1038 @@
+{
+  "service": "directory",
+  "version": "2.4.1",
+  "generated": "2026-10-11T08:00:00Z",
+  "settings": {
+    "pagination": {
+      "size": 60,
+      "total": 60
+    },
+    "features": {
+      "search": true,
+      "export": false,
+      "beta": null
+    }
+  },
+  "users": [
+    {
+      "id": 1,
+      "name": "Ada Lovelace",
+      "email": null,
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-01-10T10:00:00Z",
+        "score": 0
+      },
+      "tags": []
+    },
+    {
+      "id": 2,
+      "name": "Alan Turing",
+      "email": "user1@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-02-11T10:00:00Z",
+        "score": 42.07
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Grace Hopper",
+      "email": "user2@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-03-12T10:00:00Z",
+        "score": 45.46
+      },
+      "tags": []
+    },
+    {
+      "id": 4,
+      "name": "Linus Torvalds",
+      "email": "user3@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-04-13T10:00:00Z",
+        "score": 7.06
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Margaret Hamilton",
+      "email": "user4@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-05-14T10:00:00Z",
+        "score": -37.84
+      },
+      "tags": []
+    },
+    {
+      "id": 6,
+      "name": "Dennis Ritchie",
+      "email": "user5@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-06-15T10:00:00Z",
+        "score": -47.95
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "Ada Lovelace 6",
+      "email": "user6@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-07-16T10:00:00Z",
+        "score": -13.97
+      },
+      "tags": []
+    },
+    {
+      "id": 8,
+      "name": "Alan Turing 7",
+      "email": "user7@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-08-17T10:00:00Z",
+        "score": 32.85
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "Grace Hopper 8",
+      "email": "user8@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-09-18T10:00:00Z",
+        "score": 49.47
+      },
+      "tags": []
+    },
+    {
+      "id": 10,
+      "name": "Linus Torvalds 9",
+      "email": null,
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-01-10T10:00:00Z",
+        "score": 20.61
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 11,
+      "name": "Margaret Hamilton 10",
+      "email": "user10@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-02-11T10:00:00Z",
+        "score": -27.2
+      },
+      "tags": []
+    },
+    {
+      "id": 12,
+      "name": "Dennis Ritchie 11",
+      "email": "user11@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-03-12T10:00:00Z",
+        "score": -50
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 13,
+      "name": "Ada Lovelace 12",
+      "email": "user12@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-04-13T10:00:00Z",
+        "score": -26.83
+      },
+      "tags": []
+    },
+    {
+      "id": 14,
+      "name": "Alan Turing 13",
+      "email": "user13@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-05-14T10:00:00Z",
+        "score": 21.01
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 15,
+      "name": "Grace Hopper 14",
+      "email": "user14@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-06-15T10:00:00Z",
+        "score": 49.53
+      },
+      "tags": []
+    },
+    {
+      "id": 16,
+      "name": "Linus Torvalds 15",
+      "email": "user15@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-07-16T10:00:00Z",
+        "score": 32.51
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 17,
+      "name": "Margaret Hamilton 16",
+      "email": "user16@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-08-17T10:00:00Z",
+        "score": -14.4
+      },
+      "tags": []
+    },
+    {
+      "id": 18,
+      "name": "Dennis Ritchie 17",
+      "email": "user17@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-09-18T10:00:00Z",
+        "score": -48.07
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 19,
+      "name": "Ada Lovelace 18",
+      "email": null,
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-01-10T10:00:00Z",
+        "score": -37.55
+      },
+      "tags": []
+    },
+    {
+      "id": 20,
+      "name": "Alan Turing 19",
+      "email": "user19@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-02-11T10:00:00Z",
+        "score": 7.49
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 21,
+      "name": "Grace Hopper 20",
+      "email": "user20@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-03-12T10:00:00Z",
+        "score": 45.65
+      },
+      "tags": []
+    },
+    {
+      "id": 22,
+      "name": "Linus Torvalds 21",
+      "email": "user21@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-04-13T10:00:00Z",
+        "score": 41.83
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 23,
+      "name": "Margaret Hamilton 22",
+      "email": "user22@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-05-14T10:00:00Z",
+        "score": -0.44
+      },
+      "tags": []
+    },
+    {
+      "id": 24,
+      "name": "Dennis Ritchie 23",
+      "email": "user23@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-06-15T10:00:00Z",
+        "score": -42.31
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 25,
+      "name": "Ada Lovelace 24",
+      "email": "user24@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-07-16T10:00:00Z",
+        "score": -45.28
+      },
+      "tags": []
+    },
+    {
+      "id": 26,
+      "name": "Alan Turing 25",
+      "email": "user25@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-08-17T10:00:00Z",
+        "score": -6.62
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 27,
+      "name": "Grace Hopper 26",
+      "email": "user26@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-09-18T10:00:00Z",
+        "score": 38.13
+      },
+      "tags": []
+    },
+    {
+      "id": 28,
+      "name": "Linus Torvalds 27",
+      "email": null,
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-01-10T10:00:00Z",
+        "score": 47.82
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 29,
+      "name": "Margaret Hamilton 28",
+      "email": "user28@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-02-11T10:00:00Z",
+        "score": 13.55
+      },
+      "tags": []
+    },
+    {
+      "id": 30,
+      "name": "Dennis Ritchie 29",
+      "email": "user29@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-03-12T10:00:00Z",
+        "score": -33.18
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 31,
+      "name": "Ada Lovelace 30",
+      "email": "user30@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-04-13T10:00:00Z",
+        "score": -49.4
+      },
+      "tags": []
+    },
+    {
+      "id": 32,
+      "name": "Alan Turing 31",
+      "email": "user31@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-05-14T10:00:00Z",
+        "score": -20.2
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 33,
+      "name": "Grace Hopper 32",
+      "email": "user32@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-06-15T10:00:00Z",
+        "score": 27.57
+      },
+      "tags": []
+    },
+    {
+      "id": 34,
+      "name": "Linus Torvalds 33",
+      "email": "user33@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-07-16T10:00:00Z",
+        "score": 50
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 35,
+      "name": "Margaret Hamilton 34",
+      "email": "user34@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-08-17T10:00:00Z",
+        "score": 26.45
+      },
+      "tags": []
+    },
+    {
+      "id": 36,
+      "name": "Dennis Ritchie 35",
+      "email": "user35@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-09-18T10:00:00Z",
+        "score": -21.41
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 37,
+      "name": "Ada Lovelace 36",
+      "email": null,
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-01-10T10:00:00Z",
+        "score": -49.59
+      },
+      "tags": []
+    },
+    {
+      "id": 38,
+      "name": "Alan Turing 37",
+      "email": "user37@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-02-11T10:00:00Z",
+        "score": -32.18
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 39,
+      "name": "Grace Hopper 38",
+      "email": "user38@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-03-12T10:00:00Z",
+        "score": 14.82
+      },
+      "tags": []
+    },
+    {
+      "id": 40,
+      "name": "Linus Torvalds 39",
+      "email": "user39@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-04-13T10:00:00Z",
+        "score": 48.19
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 41,
+      "name": "Margaret Hamilton 40",
+      "email": "user40@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-05-14T10:00:00Z",
+        "score": 37.26
+      },
+      "tags": []
+    },
+    {
+      "id": 42,
+      "name": "Dennis Ritchie 41",
+      "email": "user41@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-06-15T10:00:00Z",
+        "score": -7.93
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 43,
+      "name": "Ada Lovelace 42",
+      "email": "user42@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-07-16T10:00:00Z",
+        "score": -45.83
+      },
+      "tags": []
+    },
+    {
+      "id": 44,
+      "name": "Alan Turing 43",
+      "email": "user43@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-08-17T10:00:00Z",
+        "score": -41.59
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 45,
+      "name": "Grace Hopper 44",
+      "email": "user44@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-09-18T10:00:00Z",
+        "score": 0.89
+      },
+      "tags": []
+    },
+    {
+      "id": 46,
+      "name": "Linus Torvalds 45",
+      "email": null,
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-01-10T10:00:00Z",
+        "score": 42.55
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 47,
+      "name": "Margaret Hamilton 46",
+      "email": "user46@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-02-11T10:00:00Z",
+        "score": 45.09
+      },
+      "tags": []
+    },
+    {
+      "id": 48,
+      "name": "Dennis Ritchie 47",
+      "email": "user47@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-03-12T10:00:00Z",
+        "score": 6.18
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 49,
+      "name": "Ada Lovelace 48",
+      "email": "user48@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-04-13T10:00:00Z",
+        "score": -38.41
+      },
+      "tags": []
+    },
+    {
+      "id": 50,
+      "name": "Alan Turing 49",
+      "email": "user49@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-05-14T10:00:00Z",
+        "score": -47.69
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 51,
+      "name": "Grace Hopper 50",
+      "email": "user50@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-06-15T10:00:00Z",
+        "score": -13.12
+      },
+      "tags": []
+    },
+    {
+      "id": 52,
+      "name": "Linus Torvalds 51",
+      "email": "user51@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-07-16T10:00:00Z",
+        "score": 33.51
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 53,
+      "name": "Margaret Hamilton 52",
+      "email": "user52@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-08-17T10:00:00Z",
+        "score": 49.33
+      },
+      "tags": []
+    },
+    {
+      "id": 54,
+      "name": "Dennis Ritchie 53",
+      "email": "user53@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-09-18T10:00:00Z",
+        "score": 19.8
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 55,
+      "name": "Ada Lovelace 54",
+      "email": null,
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-01-10T10:00:00Z",
+        "score": -27.94
+      },
+      "tags": []
+    },
+    {
+      "id": 56,
+      "name": "Alan Turing 55",
+      "email": "user55@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-02-11T10:00:00Z",
+        "score": -49.99
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 57,
+      "name": "Grace Hopper 56",
+      "email": "user56@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "London",
+        "joined": "2024-03-12T10:00:00Z",
+        "score": -26.08
+      },
+      "tags": []
+    },
+    {
+      "id": 58,
+      "name": "Linus Torvalds 57",
+      "email": "user57@example.com",
+      "active": false,
+      "roles": [
+        "admin"
+      ],
+      "profile": {
+        "city": "Paris",
+        "joined": "2024-04-13T10:00:00Z",
+        "score": 21.81
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    },
+    {
+      "id": 59,
+      "name": "Margaret Hamilton 58",
+      "email": "user58@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor"
+      ],
+      "profile": {
+        "city": "Tokyo",
+        "joined": "2024-05-14T10:00:00Z",
+        "score": 49.64
+      },
+      "tags": []
+    },
+    {
+      "id": 60,
+      "name": "Dennis Ritchie 59",
+      "email": "user59@example.com",
+      "active": true,
+      "roles": [
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "profile": {
+        "city": "Berlin",
+        "joined": "2024-06-15T10:00:00Z",
+        "score": 31.84
+      },
+      "tags": [
+        "early-adopter"
+      ]
+    }
+  ]
+}

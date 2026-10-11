@@ -1,0 +1,11 @@
+{
+  // The core must run unchanged in Node (extension host, MCP server, CLI),
+  // browsers and Web Workers, so it is checked without DOM or Node typings.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": [],
+    "jsx": "preserve"
+  },
+  "include": ["src/core", "types/core-env.d.ts"]
+}

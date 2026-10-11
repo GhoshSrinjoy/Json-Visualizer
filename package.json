@@ -1,0 +1,1046 @@
+{
+  "name": "structlens",
+  "displayName": "StructLens — JSON, YAML, XML, Code Flow & Repo Visualizer",
+  "description": "Fast interactive graphs for JSON/YAML/XML/TOML/CSV, logic & data-flow diagrams for code, and whole-repo maps — plus an MCP server so Claude Code, Codex, Copilot and other AI agents can see the same structures.",
+  "version": "2.0.0",
+  "publisher": "GhoshSrinjoy",
+  "author": "Srinjoy Ghosh",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#0b0d12",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GhoshSrinjoy/Json-Visualizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GhoshSrinjoy/Json-Visualizer/issues"
+  },
+  "homepage": "https://github.com/GhoshSrinjoy/Json-Visualizer#readme",
+  "engines": {
+    "vscode": "^1.101.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "Visualization",
+    "Data Science",
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "json",
+    "yaml",
+    "xml",
+    "toml",
+    "csv",
+    "graph",
+    "visualizer",
+    "json viewer",
+    "control flow",
+    "flowchart",
+    "data flow",
+    "call graph",
+    "dependency graph",
+    "treemap",
+    "mcp",
+    "copilot",
+    "claude",
+    "codex",
+    "excel",
+    "xlsx"
+  ],
+  "bin": {
+    "structlens": "./dist/cli.js"
+  },
+  "main": "./dist/extension.js",
+  "files": [
+    "dist",
+    "media/*.png",
+    "media/*.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": false
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "structlens.open",
+        "title": "Visualize Current File",
+        "category": "StructLens",
+        "icon": {
+          "light": "media/tab-light.svg",
+          "dark": "media/tab-dark.svg"
+        }
+      },
+      {
+        "command": "structlens.openFile",
+        "title": "Visualize with StructLens",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.openFolder",
+        "title": "Visualize Folder Structure",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.openWorkspace",
+        "title": "Visualize Workspace",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.showFlow",
+        "title": "Show Logic Flow (Function at Cursor)",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.showDataFlow",
+        "title": "Show Data Flow (Function at Cursor)",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.showCalls",
+        "title": "Show Call Graph",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.showStructure",
+        "title": "Show Code Structure",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.showDependencies",
+        "title": "Show Dependency Graph",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.showTreemap",
+        "title": "Show Repository Treemap",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.connectAgents",
+        "title": "Connect AI Agents (MCP)…",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.showLog",
+        "title": "Show Log",
+        "category": "StructLens"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "structlens.open",
+          "when": "resourceLangId =~ /^(json|jsonc|jsonl|json5|yaml|xml|xsl|svg|html|toml|csv|tsv|ini|properties|dotenv|javascript|javascriptreact|typescript|typescriptreact|python|go|java|csharp|rust|cpp|c|ruby|php)$/ || resourceExtname =~ /^\\.(ndjson|geojson|har|ipynb|tsv|env|plist|csproj|toml)$/",
+          "group": "navigation@90"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "structlens.showFlow",
+          "when": "editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact|python|go|java|csharp|rust|cpp|c|ruby|php)$/",
+          "group": "structlens@1"
+        },
+        {
+          "command": "structlens.showDataFlow",
+          "when": "editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact|python|go|java|csharp|rust|cpp|c|ruby|php)$/",
+          "group": "structlens@2"
+        },
+        {
+          "command": "structlens.open",
+          "when": "editorLangId =~ /^(json|jsonc|jsonl|json5|yaml|xml|html|toml|csv|tsv|ini|properties|dotenv)$/",
+          "group": "structlens@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "structlens.openFile",
+          "when": "!explorerResourceIsFolder",
+          "group": "navigation@90"
+        },
+        {
+          "command": "structlens.openFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@90"
+        },
+        {
+          "command": "structlens.showDependencies",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@91"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "structlens.openFile",
+          "when": "false"
+        },
+        {
+          "command": "structlens.openFolder",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "structlens.open",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "structlens.showFlow",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "editorTextFocus && editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact|python|go|java|csharp|rust|cpp|c|ruby|php)$/"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "structlens.dataEditor",
+        "displayName": "StructLens Visualizer",
+        "selector": [
+          {
+            "filenamePattern": "*.json"
+          },
+          {
+            "filenamePattern": "*.jsonc"
+          },
+          {
+            "filenamePattern": "*.json5"
+          },
+          {
+            "filenamePattern": "*.jsonl"
+          },
+          {
+            "filenamePattern": "*.ndjson"
+          },
+          {
+            "filenamePattern": "*.geojson"
+          },
+          {
+            "filenamePattern": "*.har"
+          },
+          {
+            "filenamePattern": "*.yaml"
+          },
+          {
+            "filenamePattern": "*.yml"
+          },
+          {
+            "filenamePattern": "*.xml"
+          },
+          {
+            "filenamePattern": "*.svg"
+          },
+          {
+            "filenamePattern": "*.plist"
+          },
+          {
+            "filenamePattern": "*.toml"
+          },
+          {
+            "filenamePattern": "*.csv"
+          },
+          {
+            "filenamePattern": "*.tsv"
+          },
+          {
+            "filenamePattern": "*.xlsx"
+          },
+          {
+            "filenamePattern": "*.xlsm"
+          },
+          {
+            "filenamePattern": "*.ini"
+          },
+          {
+            "filenamePattern": "*.properties"
+          },
+          {
+            "filenamePattern": ".env*"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "configuration": {
+      "title": "StructLens",
+      "properties": {
+        "structlens.graph.direction": {
+          "type": "string",
+          "enum": [
+            "LR",
+            "TB"
+          ],
+          "enumDescriptions": [
+            "Left to right",
+            "Top to bottom"
+          ],
+          "default": "LR",
+          "description": "Layout direction of data and structure graphs (flowcharts default to top-down)."
+        },
+        "structlens.graph.initialDepth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many levels of a data document are expanded when it opens."
+        },
+        "structlens.graph.maxVisibleNodes": {
+          "type": "number",
+          "default": 1500,
+          "minimum": 100,
+          "description": "Upper bound for cards shown by “Expand all” (keeps huge documents responsive)."
+        },
+        "structlens.graph.childPageSize": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "description": "Rows listed per card before “show more” (large arrays are paged)."
+        },
+        "structlens.animations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Animate layout changes and camera moves."
+        },
+        "structlens.minimap": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a minimap for large graphs."
+        },
+        "structlens.followCursor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the visualizer and the editor in sync: moving the cursor selects the matching node (and the function's flow), selecting a node highlights its source."
+        },
+        "structlens.theme": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "dark",
+            "light"
+          ],
+          "default": "auto",
+          "description": "Visualizer theme. “auto” follows the VS Code color theme."
+        },
+        "structlens.repo.respectGitignore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip files ignored by .gitignore (nested .gitignore files and .git/info/exclude included)."
+        },
+        "structlens.repo.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".git/",
+            ".hg/",
+            ".svn/",
+            "node_modules/",
+            "bower_components/",
+            "__pycache__/",
+            ".venv/",
+            "venv/",
+            ".tox/",
+            ".mypy_cache/",
+            ".pytest_cache/",
+            ".ruff_cache/",
+            ".next/",
+            ".nuxt/",
+            ".svelte-kit/",
+            ".turbo/",
+            ".parcel-cache/",
+            ".gradle/",
+            ".idea/",
+            ".vs/",
+            ".nyc_output/",
+            ".DS_Store",
+            "Thumbs.db",
+            "*.pyc"
+          ],
+          "description": "gitignore-style patterns always excluded from repository views."
+        },
+        "structlens.repo.maxFiles": {
+          "type": "number",
+          "default": 200000,
+          "description": "Stop scanning after this many files."
+        },
+        "structlens.repo.countLines": {
+          "type": "boolean",
+          "default": true,
+          "description": "Count lines of text files (slightly slower scans of huge repositories)."
+        },
+        "structlens.ai.copilotTools": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer StructLens tools (repo overview, file structure, code flow, call/dependency graphs, data queries…) to GitHub Copilot agent mode. Reload to apply."
+        },
+        "structlens.ai.mcpServer": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also publish StructLens as an MCP server to VS Code's MCP support (leave off when using the Copilot tools above to avoid duplicates)."
+        },
+        "structlens.ai.bridge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let AI agents connected over MCP (Claude Code, Codex, Cursor…) open StructLens views in this window. Listens on 127.0.0.1 with a per-session secret. Reload to apply."
+        }
+      }
+    },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "structlens.mcp",
+        "label": "StructLens"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "structlens_repo_overview",
+        "toolReferenceName": "repoOverview",
+        "displayName": "StructLens: Repository overview",
+        "modelDescription": "Summary of a repository or folder: file/line counts, language breakdown, largest files, key config/entry files and the top two levels of the tree. Respects .gitignore. Call this first to orient yourself.",
+        "userDescription": "Summary of a repository or folder: file/line counts, language breakdown, largest files, key config/entry files and the top two levels of the tree.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(repo)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Folder (default: workspace root)",
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "structlens_repo_tree",
+        "toolReferenceName": "repoTree",
+        "displayName": "StructLens: Directory tree",
+        "modelDescription": "Directory tree with per-folder file and line counts and per-file line counts (respects .gitignore; large folders are collapsed with \"… N more\"). Use path to zoom into a subfolder and depth to go deeper.",
+        "userDescription": "Directory tree with per-folder file and line counts and per-file line counts (respects .gitignore; large folders are collapsed with \"… N more\").",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-tree)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Folder (default: workspace root)",
+              "type": "string"
+            },
+            "depth": {
+              "description": "Levels to expand (default 3)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "maxChildren": {
+              "description": "Entries listed per folder before collapsing (default 40)",
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 500
+            },
+            "dirsOnly": {
+              "description": "Only show folders",
+              "type": "boolean"
+            },
+            "showSize": {
+              "description": "Show byte sizes",
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      {
+        "name": "structlens_file_structure",
+        "toolReferenceName": "fileStructure",
+        "displayName": "StructLens: Structure of a file",
+        "modelDescription": "General structural view of any file. Data files (JSON, JSONC, JSON Lines, YAML, XML, HTML, TOML, CSV/TSV, Excel .xlsx, INI, .env, .properties) return a size/type summary plus an inferred schema (default) or a value outline; huge files are fine. Source files (TypeScript, JavaScript, Python, Go, Java, C#, Rust, C/C++, Ruby, PHP and more) return imports, exports and the symbol tree with signatures, line ranges and complexity.",
+        "userDescription": "General structural view of any file.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(symbol-structure)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "File path"
+            },
+            "mode": {
+              "description": "Data files: schema (default), outline of values, or summary only",
+              "type": "string",
+              "enum": [
+                "schema",
+                "outline",
+                "summary"
+              ]
+            },
+            "depth": {
+              "description": "Depth for outlines (default 4)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            },
+            "showCalls": {
+              "description": "Code files: list the calls each function makes",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "structlens_data_schema",
+        "toolReferenceName": "dataSchema",
+        "displayName": "StructLens: Infer data schema",
+        "modelDescription": "Infers the schema of a JSON/YAML/XML/TOML/CSV/Excel file (or of the subtree at a JSONPath): types, optional fields with presence %, array sizes, enums, formats (date-time, email, uuid…), numeric ranges and examples. Output as compact text, JSON Schema or TypeScript types. Ideal for files too large to read.",
+        "userDescription": "Infers the schema of a JSON/YAML/XML/TOML/CSV/Excel file (or of the subtree at a JSONPath): types, optional fields with presence %, array sizes, enums, formats (date-time, email, uuid…), numeric ranges and examples.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(json)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Data file path"
+            },
+            "at": {
+              "description": "JSONPath of the subtree to describe, e.g. $.items[0]",
+              "type": "string"
+            },
+            "format": {
+              "description": "Output format (default text)",
+              "type": "string",
+              "enum": [
+                "text",
+                "json-schema",
+                "typescript"
+              ]
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "structlens_data_query",
+        "toolReferenceName": "dataQuery",
+        "displayName": "StructLens: Query a data file",
+        "modelDescription": "Runs a JSONPath query against a JSON/YAML/XML/TOML/CSV/Excel file and returns matching paths, line numbers and values. Supports $.a.b, [0], [-1], [1:5], [*], .., unions and filters like $.users[?(@.age > 30 && @.active)] or [?(@.email =~ /@example\\.com$/)]; a bare @.field in a filter is tested for truthiness.",
+        "userDescription": "Runs a JSONPath query against a JSON/YAML/XML/TOML/CSV/Excel file and returns matching paths, line numbers and values.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(filter)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Data file path"
+            },
+            "query": {
+              "type": "string",
+              "description": "JSONPath expression"
+            },
+            "limit": {
+              "description": "Max results (default 50)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            }
+          },
+          "required": [
+            "path",
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "structlens_data_search",
+        "toolReferenceName": "dataSearch",
+        "displayName": "StructLens: Search keys and values",
+        "modelDescription": "Full-text search over the keys and values of a data file; returns the JSONPath, line and value of each hit.",
+        "userDescription": "Full-text search over the keys and values of a data file; returns the JSONPath, line and value of each hit.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(search)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Data file path"
+            },
+            "text": {
+              "type": "string",
+              "description": "Text or regular expression to find"
+            },
+            "regex": {
+              "type": "boolean"
+            },
+            "caseSensitive": {
+              "type": "boolean"
+            },
+            "in": {
+              "description": "Where to search (default both)",
+              "type": "string",
+              "enum": [
+                "both",
+                "keys",
+                "values"
+              ]
+            },
+            "limit": {
+              "description": "Max results (default 50)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            }
+          },
+          "required": [
+            "path",
+            "text"
+          ]
+        }
+      },
+      {
+        "name": "structlens_data_tree",
+        "toolReferenceName": "dataTree",
+        "displayName": "StructLens: Browse data values",
+        "modelDescription": "Outline of the actual values in a data file starting at a JSONPath (keys, types, child counts, value previews). Use to page through large documents level by level.",
+        "userDescription": "Outline of the actual values in a data file starting at a JSONPath (keys, types, child counts, value previews).",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-tree)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Data file path"
+            },
+            "at": {
+              "description": "JSONPath to start from (default $)",
+              "type": "string"
+            },
+            "depth": {
+              "description": "Levels (default 3)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "maxChildren": {
+              "description": "Children per node (default 25)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "structlens_code_outline",
+        "toolReferenceName": "codeOutline",
+        "displayName": "StructLens: Code outline",
+        "modelDescription": "Imports, exports and the symbol tree (classes, interfaces, functions, methods, fields) of a source file with signatures, docs, modifiers, base types, line ranges and cyclomatic complexity.",
+        "userDescription": "Imports, exports and the symbol tree (classes, interfaces, functions, methods, fields) of a source file with signatures, docs, modifiers, base types, line ranges and cyclomatic complexity.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(symbol-class)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Source file path"
+            },
+            "showCalls": {
+              "description": "Also list the calls made by each function",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "structlens_code_flow",
+        "toolReferenceName": "codeFlow",
+        "displayName": "StructLens: Logic flow of a function",
+        "modelDescription": "Control-flow graph (flowchart) of one function: decisions with yes/no branches, loops with back edges, switch/match cases, try/catch/finally, early returns, throws, break/continue and unreachable code, plus cyclomatic complexity. Mermaid output can be shown to the user directly.",
+        "userDescription": "Control-flow graph (flowchart) of one function: decisions with yes/no branches, loops with back edges, switch/match cases, try/catch/finally, early returns, throws, break/continue and unreachable code, plus cyclomatic complexity.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(git-merge)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Source file path"
+            },
+            "function": {
+              "type": "string",
+              "description": "Function name, Class.method, a line number inside it, or \"<module>\" for top-level code"
+            },
+            "format": {
+              "description": "Default: both",
+              "type": "string",
+              "enum": [
+                "mermaid",
+                "text",
+                "both"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "function"
+          ]
+        }
+      },
+      {
+        "name": "structlens_code_dataflow",
+        "toolReferenceName": "codeDataflow",
+        "displayName": "StructLens: Data flow of a function",
+        "modelDescription": "How values move inside one function: parameters → local variables → calls → return value, including fields written (this.x/self.x), collections mutated by method calls and loop iteration, with line numbers.",
+        "userDescription": "How values move inside one function: parameters → local variables → calls → return value, including fields written (this.x/self.x), collections mutated by method calls and loop iteration, with line numbers.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(arrow-swap)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Source file path"
+            },
+            "function": {
+              "type": "string",
+              "description": "Function name, Class.method, a line number inside it, or \"<module>\" for top-level code"
+            },
+            "format": {
+              "description": "Default: both",
+              "type": "string",
+              "enum": [
+                "mermaid",
+                "text",
+                "both"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "function"
+          ]
+        }
+      },
+      {
+        "name": "structlens_call_graph",
+        "toolReferenceName": "callGraph",
+        "displayName": "StructLens: Call graph",
+        "modelDescription": "Who calls whom across files and folders. Calls are resolved through this/self, same-file definitions and imports. Use focus to see the callers/callees of one function within N hops.",
+        "userDescription": "Who calls whom across files and folders.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(call-outgoing)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "description": "Files and/or folders to analyse (default: workspace root)",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "focus": {
+              "description": "Function to centre on: \"name\", \"Class.method\" or \"path#symbolId\"",
+              "type": "string"
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "callees",
+                "callers",
+                "both"
+              ]
+            },
+            "depth": {
+              "description": "Hops from the focus (default 2)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "externals": {
+              "description": "Include calls into libraries/unknown code",
+              "type": "boolean"
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "text",
+                "mermaid"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "structlens_dependency_graph",
+        "toolReferenceName": "dependencyGraph",
+        "displayName": "StructLens: Import / dependency graph",
+        "modelDescription": "Module dependency graph of a folder: resolved imports between files (tsconfig paths, workspaces, Python packages, go.mod, Java/C# packages, C includes, Rust modules…), import cycles, most-imported files, fan-out and external packages. Use focus for one file's imports and importers; level=folder for an architecture-level view.",
+        "userDescription": "Module dependency graph of a folder: resolved imports between files (tsconfig paths, workspaces, Python packages, go.mod, Java/C# packages, C includes, Rust modules…), import cycles, most-imported files, fan-out and external packages.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(references)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Folder (default: workspace root)",
+              "type": "string"
+            },
+            "focus": {
+              "description": "File to show imports/importers for",
+              "type": "string"
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "file",
+                "folder"
+              ]
+            },
+            "folderDepth": {
+              "description": "Folder level for level=folder (default 2)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6
+            },
+            "externals": {
+              "description": "Include external packages (default true)",
+              "type": "boolean"
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "text",
+                "mermaid"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "structlens_find_symbol",
+        "toolReferenceName": "findSymbol",
+        "displayName": "StructLens: Find symbol definitions",
+        "modelDescription": "Finds where functions, classes, methods, types and constants are defined across the workspace (by full or partial name), with file paths, line ranges and signatures.",
+        "userDescription": "Finds where functions, classes, methods, types and constants are defined across the workspace (by full or partial name), with file paths, line ranges and signatures.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(symbol-method)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Name or part of a name"
+            },
+            "path": {
+              "description": "Limit to a folder",
+              "type": "string"
+            },
+            "kinds": {
+              "description": "e.g. [\"class\",\"function\",\"method\"]",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "structlens_open_visualizer",
+        "toolReferenceName": "openVisualizer",
+        "displayName": "StructLens: Show an interactive diagram",
+        "modelDescription": "Opens the interactive StructLens visualizer for the user: inside their VS Code window when the extension is running, otherwise in the browser. Views — data files: graph, tree, table, schema; code files: structure, flow, dataflow, calls; folders: tree, treemap, graph, deps, stats.",
+        "userDescription": "Opens the interactive StructLens visualizer for the user: inside their VS Code window when the extension is running, otherwise in the browser.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(graph)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "File or folder to show"
+            },
+            "view": {
+              "type": "string",
+              "enum": [
+                "graph",
+                "tree",
+                "table",
+                "schema",
+                "text",
+                "structure",
+                "flow",
+                "dataflow",
+                "calls",
+                "treemap",
+                "deps",
+                "stats"
+              ]
+            },
+            "function": {
+              "description": "Code: function to focus (name or Class.method)",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:prod": "node scripts/build.mjs --production",
+    "watch": "node scripts/build.mjs --watch",
+    "manifest": "node scripts/gen-manifest.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.core.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:vscode": "node scripts/test-vscode.mjs",
+    "bench": "node --expose-gc scripts/bench.mjs",
+    "screenshots": "node scripts/test-vscode.mjs --screenshots docs/screenshots --shot-width 1600",
+    "package": "vsce package --no-dependencies",
+    "vscode:prepublish": "node scripts/build.mjs --production"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@types/node": "^22.20.5",
+    "@types/vscode": "1.101.0",
+    "@vscode/tree-sitter-wasm": "^0.3.1",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "ignore": "^7.0.12",
+    "preact": "^11.0.1",
+    "puppeteer-core": "^25.13.0",
+    "smol-toml": "^1.9.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  }
+}
