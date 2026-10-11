@@ -1,0 +1,6 @@
+# Keep LF everywhere: tests assert byte offsets in fixtures, and the tooling is cross-platform.
+* text=auto eol=lf
+*.png binary
+*.xlsx binary
+*.wasm binary
+*.vsix binary
