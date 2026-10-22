@@ -1,12 +1,17 @@
 /** Right-hand panel: node details when something is selected, document overview otherwise. */
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import type { EditCaps, EditMode } from '../../../core/data/edit';
 import { FORMAT_LABELS } from '../../../core/data/formats';
 import { formatBytes, withCommas } from '../../../core/util/strings';
 import { Icon } from '../../components/icons';
-import { app, copy, host, useStore } from '../../store';
+import { app, copy, host, toast, useStore } from '../../store';
 import type { NodeDetail } from '../../worker/protocol';
 import { useData } from './context';
+import { copyValue } from './actions';
+import { EditActions, EditForm } from './EditPanel';
+import { NodeValidation, ValidationSection } from './Validation';
+import { ValuePreview } from './ValuePreview';
 
 const TYPE_VARS: Record<string, string> = {
   object: 'var(--t-object)', array: 'var(--t-array)', string: 'var(--t-string)', number: 'var(--t-number)', boolean: 'var(--t-boolean)', null: 'var(--t-null)',
@@ -17,15 +22,50 @@ export function DataInspector() {
   const { client, selected } = ctx;
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const caps = useStore(app, (s) => s.init?.capabilities);
+  const [editCaps, setEditCaps] = useState<EditCaps | null>(null);
+  const [mode, setMode] = useState<EditMode | null>(null);
+  const handled = useRef(0);
 
   useEffect(() => {
     if (selected === null) return setDetail(null);
     let alive = true;
-    void client.call('detail', { id: selected, maxChars: 20000 }).then((d) => alive && setDetail(d));
+    void client.call('detail', { id: selected, maxChars: 20000 }).then(async (d) => {
+      // Embedded images can be long: fetch them whole so the preview works.
+      if (d.valueTruncated && d.type === 'string' && d.value.startsWith('data:image/')) d = await client.call('detail', { id: d.id, maxChars: 16_000_000 });
+      if (!alive) return;
+      setDetail(d);
+      setMode(null);
+      setEditCaps(ctx.edit ? await client.call('editCaps', { id: d.id }) : null);
+    });
     return () => {
       alive = false;
     };
   }, [client, selected, ctx.summary]);
+
+  // Menus and shortcuts elsewhere ask for the editor of a node.
+  useEffect(() => {
+    const r = ctx.editRequest;
+    if (r && r.seq !== handled.current && detail?.id === r.id && editCaps) {
+      handled.current = r.seq;
+      setMode(r.mode);
+    }
+  }, [ctx.editRequest?.seq, detail, editCaps]);
+
+  // F2 edits (or renames a container), Delete asks to delete — unless the user is typing.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!detail || !editCaps || mode || e.altKey || e.ctrlKey || e.metaKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      const container = detail.type === 'object' || detail.type === 'array';
+      if (e.key === 'F2' && (editCaps.set || editCaps.rename)) setMode(editCaps.set && !container ? 'set' : editCaps.rename ? 'rename' : 'set');
+      else if (e.key === 'Delete' && editCaps.delete) setMode('delete');
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detail, editCaps, mode]);
 
   if (!detail) return <Overview />;
   const d = detail;
@@ -53,11 +93,11 @@ export function DataInspector() {
           <button class="btn" onClick={() => copy(d.path, `Copied ${d.path}`)}>
             <Icon name="link" /> Path
           </button>
-          <button class="btn" onClick={() => client.call('detail', { id: d.id, maxChars: 20_000_000 }).then((x) => copy(x.value, 'Value copied'))}>
+          <button class="btn" onClick={() => void copyValue(client, d.id)}>
             <Icon name="copy" /> Value
           </button>
           {container && (
-            <button class="btn" onClick={() => client.call('json', { id: d.id, indent: 2, maxChars: 50_000_000 }).then((t) => copy(t, 'JSON copied'))}>
+            <button class="btn" onClick={() => client.call('json', { id: d.id, indent: 2, maxChars: 50_000_000 }).then((t) => copy(t, 'JSON copied'), (e: Error) => toast(e.message, 'error'))}>
               <Icon name="braces" /> JSON
             </button>
           )}
@@ -71,6 +111,7 @@ export function DataInspector() {
               <Icon name="table" /> Table
             </button>
           )}
+          {editCaps && <EditActions caps={editCaps} d={d} onEdit={setMode} />}
           {d.parent >= 0 && d.parent >= ctx.summary.root && (
             <button class="btn" onClick={() => ctx.select(d.parent, { focus: true })} title="Select parent">
               <Icon name="chevronUp" /> Parent
@@ -78,6 +119,9 @@ export function DataInspector() {
           )}
         </div>
       </div>
+      {mode && <EditForm key={`${d.id}:${mode}`} d={d} mode={mode} onDone={() => setMode(null)} />}
+      <NodeValidation id={d.id} />
+      {!container && !d.valueTruncated && <ValuePreview type={d.type} value={d.value} valueKey={d.key} />}
       <div class="panel-section">
         <p class="section-title">{container ? 'Content' : 'Value'}</p>
         <pre class="code-block">
@@ -158,6 +202,7 @@ function Overview() {
           </div>
         ))}
       </div>
+      <ValidationSection />
       {summary.errors.length > 0 && <ErrorList />}
       <div class="panel-section" style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
         <Icon name="info" style={{ display: 'inline', verticalAlign: '-3px', marginRight: '6px' }} />

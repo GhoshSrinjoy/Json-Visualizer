@@ -79,26 +79,285 @@ export function familyOf(path: string): Family | undefined {
   return dot < 0 ? undefined : FAMILY_BY_EXT[path.slice(dot + 1).toLowerCase()];
 }
 
-/** Replaces comments with spaces (keeping newlines) so regexes skip them. */
-function stripComments(text: string, family: Family): string {
-  const blank = (m: string) => m.replace(/[^\n]/g, ' ');
-  switch (family) {
-    case 'py':
-    case 'ruby':
-      return text.replace(/^[ \t]*#[^\n]*/gm, blank);
-    case 'lua':
-      return text.replace(/--\[\[[\s\S]*?\]\]|--[^\n]*/g, blank);
-    case 'html':
-      return text.replace(/<!--[\s\S]*?-->/g, blank);
-    default:
-      return text.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/(^|[^:'"\\])\/\/[^\n]*/g, (m, p: string) => p + blank(m.slice(p.length)));
+// ---------------------------------------------------------------- comments and strings
+
+/** Comment and string syntax of a language family, as far as finding imports needs it. */
+interface Lexis {
+  /** Line comment markers. */
+  line: string[];
+  block?: [string, string];
+  /** Block comments nest (Rust, Swift, Dart). */
+  nested?: boolean;
+  /** Quote characters of ordinary string (and char) literals. */
+  quotes: string;
+  /** Ordinary strings may span lines; elsewhere a newline ends an unterminated one. */
+  multiline?: boolean;
+  /** `"""…"""` / `'''…'''` strings (Python, Java text blocks, Kotlin, C#, Dart, Swift). */
+  triple?: boolean;
+  /** Imports never name a string literal here: blank strings too (docstrings, text blocks). */
+  blankStrings?: boolean;
+  /** Where a comment or literal may start: the scanner jumps from one match to the next. */
+  start: RegExp;
+}
+
+const LEXIS: Partial<Record<Family, Lexis>> = {
+  js: { line: ['//'], block: ['/*', '*/'], quotes: `'"`, start: /[/'"`]/g },
+  py: { line: ['#'], quotes: `'"`, triple: true, blankStrings: true, start: /[#'"]/g },
+  go: { line: ['//'], block: ['/*', '*/'], quotes: `'"\``, start: /[/'"`]/g },
+  jvm: { line: ['//'], block: ['/*', '*/'], quotes: `'"`, triple: true, blankStrings: true, start: /[/'"]/g },
+  cs: { line: ['//'], block: ['/*', '*/'], quotes: `'"`, triple: true, blankStrings: true, start: /[/'"]|@\$?"|\$@"/g },
+  c: { line: ['//'], block: ['/*', '*/'], quotes: `'"`, start: /[/'"]|\b(?:u8|[LuU])?R"/g },
+  rust: { line: ['//'], block: ['/*', '*/'], nested: true, quotes: '"', multiline: true, blankStrings: true, start: /[/'"]|\bb?r#*"/g },
+  php: { line: ['//', '#'], block: ['/*', '*/'], quotes: `'"`, multiline: true, start: /[/#'"]|\?>/g },
+  css: { line: [], block: ['/*', '*/'], quotes: `'"`, start: /[/'"]|\burl\(/gi },
+  dart: { line: ['//'], block: ['/*', '*/'], nested: true, quotes: `'"`, triple: true, start: /[/'"]/g },
+  swift: { line: ['//'], block: ['/*', '*/'], nested: true, quotes: '"', triple: true, blankStrings: true, start: /[/"]/g },
+  lua: { line: ['--'], quotes: `'"`, start: /--|['"]|\[=*\[/g },
+};
+
+/** JavaScript inside a template literal's `${…}`: braces matter too. */
+const JS_IN_TEMPLATE = /[/'"`{}]/g;
+
+/** Keywords after which a JavaScript `/` starts a regex rather than a division. */
+const REGEX_AFTER = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
+
+const blank = (s: string) => (s.includes('\n') ? s.replace(/[^\n]/g, ' ') : ' '.repeat(s.length));
+const isWordChar = (c: string | undefined) => !!c && /[\w$]/.test(c);
+const isSpace = (c: string) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+
+/**
+ * Replaces comments with spaces (keeping newlines and offsets) so the import regexes skip them.
+ * Strings, JavaScript template literals and regex literals are read as such: the `/*` in
+ * `'lib/*.js'` opens no comment, and no string closes one. Where imports never use string
+ * literals (`blankStrings`), strings are blanked too; template text and regex bodies always are.
+ */
+export function stripComments(text: string, family: Family, path = '', blankStrings = false): string {
+  if (family === 'ruby') return text.replace(/^[ \t]*#[^\n]*|^=begin\b[\s\S]*?^=end\b[^\n]*/gm, blank);
+  if (family === 'html') return text.replace(/<!--[\s\S]*?-->/g, blank);
+  const base = LEXIS[family];
+  if (!base) return text;
+  const lx = blankStrings ? { ...base, blankStrings } : base;
+  const js = family === 'js';
+  // Sass and Less have `//` comments; in CSS `//` starts a protocol-relative URL.
+  const line = family === 'css' && /\.(scss|sass|less)$/i.test(path) ? ['//'] : lx.line;
+  const n = text.length;
+  const out: string[] = [];
+  let last = 0;
+  /** Blanks text[from, to). */
+  const drop = (from: number, to: number) => {
+    out.push(text.slice(last, from), blank(text.slice(from, to)));
+    last = to;
+  };
+  /** End of a string whose body starts at `i`, closed by `close`. */
+  const stringEnd = (i: number, close: string, escapes: boolean, multiline: boolean): number => {
+    const q = close.charCodeAt(0);
+    for (; i < n; i++) {
+      const c = text.charCodeAt(i);
+      if (c === 92 && escapes) i++; // backslash
+      else if (c === q && (close.length === 1 || text.startsWith(close, i))) return i + close.length;
+      else if (c === 10 && !multiline) return i;
+    }
+    return n;
+  };
+  /** End of a template literal's text: after the closing backtick, or after the `${` that opens an expression. */
+  const templateEnd = (i: number): { end: number; open: boolean } => {
+    for (; i < n; i++) {
+      const c = text[i];
+      if (c === '\\') i++;
+      else if (c === '`') return { end: i + 1, open: false };
+      else if (c === '$' && text[i + 1] === '{') return { end: i + 2, open: true };
+    }
+    return { end: n, open: false };
+  };
+  /** Brace depth inside each open `${…}` of a template literal. */
+  const templates: number[] = [];
+  // Last code character that is not a space, and where it is (JS regex detection).
+  let prev = '';
+  let prevAt = -1;
+  let i = 0;
+  /** PHP: text outside `<?php … ?>` is HTML, not code (its apostrophes open no strings). */
+  const skipHtml = (from: number) => {
+    const e = text.indexOf('<?', from);
+    const end = e < 0 ? n : e;
+    drop(from, end);
+    i = end;
+  };
+  if (family === 'php') skipHtml(0);
+  while (i < n) {
+    // Jump to the next place where a comment or literal may start.
+    const start = js && templates.length ? JS_IN_TEMPLATE : lx.start;
+    start.lastIndex = i;
+    const m = start.exec(text);
+    const at = m ? m.index : n;
+    const token = m ? m[0] : '';
+    if (js) {
+      for (let k = at - 1; k >= i; k--) {
+        if (!isSpace(text[k])) {
+          prev = text[k];
+          prevAt = k;
+          break;
+        }
+      }
+    }
+    i = at;
+    if (i >= n) break;
+    const c = text[i];
+    if (family === 'php' && c === '?') {
+      skipHtml(i + 2);
+      continue;
+    }
+    // Comments.
+    if (family === 'lua' && text.startsWith('--', i)) {
+      const long = /^--\[(=*)\[/.exec(text.slice(i, i + 64));
+      const close = long ? `]${long[1]}]` : '\n';
+      const e = text.indexOf(close, i);
+      const end = e < 0 ? n : long ? e + close.length : e;
+      drop(i, end);
+      i = end;
+      continue;
+    }
+    if (line.some((m) => text.startsWith(m, i)) && !(c === '#' && family === 'php' && text[i + 1] === '[')) {
+      const e = text.indexOf('\n', i);
+      const end = e < 0 ? n : e;
+      drop(i, end);
+      i = end;
+      continue;
+    }
+    if (lx.block && text.startsWith(lx.block[0], i)) {
+      const [open, close] = lx.block;
+      let end = n;
+      for (let j = i + open.length, depth = 1; j < n; ) {
+        if (text.startsWith(close, j)) {
+          j += close.length;
+          if (--depth === 0) {
+            end = j;
+            break;
+          }
+        } else if (lx.nested && text.startsWith(open, j)) {
+          j += open.length;
+          depth++;
+        } else j++;
+      }
+      drop(i, end);
+      i = end;
+      continue;
+    }
+    // String-like literals: [start, end) and whether they always count as text.
+    let end = -1;
+    let textOnly = false;
+    if (js && c === '`') {
+      const t = templateEnd(i + 1);
+      if (t.open) templates.push(0);
+      end = t.end;
+      textOnly = true;
+    } else if (js && c === '}' && templates.length && templates[templates.length - 1] === 0) {
+      templates.pop();
+      const t = templateEnd(i + 1);
+      if (t.open) templates.push(0);
+      end = t.end;
+      textOnly = true;
+    } else if (js && c === '/' && (!prev || '(,=:[!&|?{};+-*%<>~^}'.includes(prev) || (isWordChar(prev) && REGEX_AFTER.has(wordEndingAt(text, prevAt))))) {
+      // A regex literal: `[…]` classes may hold `/`; it must end on its line.
+      let inClass = false;
+      for (let j = i + 1; j < n && text[j] !== '\n'; j++) {
+        const r = text[j];
+        if (r === '\\') j++;
+        else if (r === '[') inClass = true;
+        else if (r === ']') inClass = false;
+        else if (r === '/' && !inClass) {
+          end = j + 1;
+          while (end < n && /[a-z]/i.test(text[end])) end++;
+          break;
+        }
+      }
+      textOnly = true;
+    } else if (lx.triple && (c === '"' || c === "'") && text.startsWith(c.repeat(3), i)) {
+      end = stringEnd(i + 3, c.repeat(3), true, true);
+    } else if (family === 'cs' && (c === '@' || c === '$') && /^(@\$?|\$@)"/.test(text.slice(i, i + 3))) {
+      // Verbatim string: no escapes, `""` is a quote.
+      let j = text.indexOf('"', i) + 1;
+      while (j < n && !(text[j] === '"' && text[j + 1] !== '"')) j += text[j] === '"' ? 2 : 1;
+      end = Math.min(n, j + 1);
+    } else if (family === 'c' && token.endsWith('R"')) {
+      // Raw string R"delim( … )delim" (also u8R, LR…).
+      const body = i + token.length;
+      const paren = text.indexOf('(', body);
+      const close = paren < 0 ? '"' : `)${text.slice(body, paren)}"`;
+      const e = text.indexOf(close, Math.max(body, paren));
+      end = e < 0 ? n : e + close.length;
+    } else if (family === 'rust' && (c === 'r' || c === 'b')) {
+      // Raw string r"…", r#"…"#, br"…".
+      const hashes = /^b?r(#*)"/.exec(text.slice(i, i + 68))![1];
+      end = stringEnd(text.indexOf('"', i) + 1, `"${hashes}`, false, true);
+    } else if (family === 'rust' && c === "'") {
+      // A char literal ('a', '\n', '\u{1F600}'), or a lifetime / label ('a) that is left alone.
+      const m = /^'(?:\\(?:u\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|.)|[^\\'\n][\uDC00-\uDFFF]?)'/.exec(text.slice(i, i + 16));
+      if (m) end = i + m[0].length;
+    } else if (family === 'lua' && c === '[') {
+      const eq = /^\[(=*)\[/.exec(text.slice(i, i + 64))![1];
+      const e = text.indexOf(`]${eq}]`, i);
+      end = e < 0 ? n : e + eq.length + 2;
+    } else if (family === 'css' && (c === 'u' || c === 'U')) {
+      // An unquoted url(…) may hold `//`; a quoted one is read as a string next.
+      if (!/^url\(\s*['"]/i.test(text.slice(i, i + 6))) {
+        const e = text.indexOf(')', i);
+        end = e < 0 ? n : e + 1;
+      }
+    } else if (lx.quotes.includes(c)) {
+      // Go raw strings (`…`) have no escapes and may span lines.
+      const raw = c === '`';
+      end = stringEnd(i + 1, c, !raw, raw || !!lx.multiline);
+    }
+    if (end > i) {
+      if (textOnly || lx.blankStrings) drop(i, end);
+      prev = ')';
+      i = end;
+      continue;
+    }
+    // Code.
+    if (js && templates.length) {
+      if (c === '{') templates[templates.length - 1]++;
+      else if (c === '}') templates[templates.length - 1]--;
+    }
+    prev = c;
+    prevAt = i;
+    i++;
   }
+  out.push(text.slice(last));
+  return out.join('');
+}
+
+/** The identifier that ends at `end` (inclusive). */
+function wordEndingAt(text: string, end: number): string {
+  let k = end;
+  while (k >= 0 && isWordChar(text[k])) k--;
+  return text.slice(k + 1, end + 1);
+}
+
+/**
+ * Spans of PHP code (comments and strings blanked) inside a class, function or other block
+ * that is not a `namespace { … }` block.
+ */
+function phpBodies(code: string): [number, number][] {
+  const spans: [number, number][] = [];
+  const open: { at: number; ns: boolean }[] = [];
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] === '{') open.push({ at: i, ns: /\bnamespace\b[^;{}]*$/.test(code.slice(Math.max(0, i - 200), i)) });
+    else if (code[i] === '}') {
+      const top = open.pop();
+      // Only the outermost such block: nested ones lie inside it.
+      if (top && !top.ns && open.every((o) => o.ns)) spans.push([top.at, i]);
+    }
+  }
+  const outer = open.find((o) => !o.ns);
+  if (outer) spans.push([outer.at, code.length]);
+  return spans;
 }
 
 export function extractImports(text: string, path: string): RawImport[] {
   const family = familyOf(path);
   if (!family) return [];
-  const src = stripComments(text, family);
+  const src = stripComments(text, family, path);
   const lineStarts: number[] = [0];
   for (let i = src.indexOf('\n'); i >= 0; i = src.indexOf('\n', i + 1)) lineStarts.push(i + 1);
   const lineOf = (idx: number) => {
@@ -112,12 +371,12 @@ export function extractImports(text: string, path: string): RawImport[] {
     return lo;
   };
   const out: RawImport[] = [];
-  const scan = (re: RegExp, kind: DepKind, group = 1, names?: (m: RegExpExecArray) => string[] | undefined) => {
+  const scan = (re: RegExp, kind: DepKind, group = 1, names?: (m: RegExpExecArray) => string[] | undefined, skip?: (at: number) => boolean) => {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(src))) {
       const s = m[group]?.trim();
-      if (s) out.push({ specifier: s, kind, line: lineOf(m.index), names: names?.(m) });
+      if (s && !skip?.(m.index)) out.push({ specifier: s, kind, line: lineOf(m.index), names: names?.(m) });
       if (m[0].length === 0) re.lastIndex++;
     }
   };
@@ -161,19 +420,33 @@ export function extractImports(text: string, path: string): RawImport[] {
     case 'c':
       scan(/^[ \t]*#[ \t]*(?:include|import)[ \t]*([<"][^>"\n]+[>"])/gm, 'include');
       break;
-    case 'rust':
+    case 'rust': {
       scan(/^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(\w+)[ \t]*;/gm, 'mod');
+      const mods = new Set(out.map((r) => r.specifier));
+      // Modules and enums declared inline: `use` paths into them stay in this file.
+      const inline = new Set([...src.matchAll(/^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?(?:mod|enum)[ \t]+(\w+)[^;{]*\{/gm)].map((m) => m[1]));
+      const first = out.length;
       scan(/^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?use[ \t]+([^;]+);/gm, 'use');
+      for (let k = out.length - 1; k >= first; k--) {
+        // Paths may start at an item of the current module (2018 edition): `mod config; use config::Settings;`.
+        const head = out[k].specifier.split('::')[0].trim();
+        if (mods.has(head)) out[k].specifier = `self::${out[k].specifier}`;
+        else if (inline.has(head)) out.splice(k, 1);
+      }
       scan(/^[ \t]*extern[ \t]+crate[ \t]+(\w+)/gm, 'use');
       break;
+    }
     case 'ruby':
       scan(/^[ \t]*require_relative[ \t(]+['"]([^'"]+)['"]/gm, 'require');
       for (const r of out) r.specifier = `./${r.specifier.replace(/^\.\//, '')}`;
       scan(/^[ \t]*(?:require|load)[ \t(]+['"]([^'"]+)['"]/gm, 'require');
       break;
-    case 'php':
-      scan(/^[ \t]*use[ \t]+(?:function[ \t]+|const[ \t]+)?([\w\\]+)(?:[ \t]+as[ \t]+\w+)?[ \t]*;/gm, 'use');
-      scan(/^[ \t]*use[ \t]+([\w\\]+)\\\{([^}]+)\}/gm, 'use', 1, (m) => m[2].split(',').map((s) => s.trim().split(/\s+as\s+/)[0]));
+    case 'php': {
+      // `use Trait;` inside a class body is not an import.
+      const bodies = phpBodies(stripComments(text, 'php', path, true));
+      const inBody = (at: number) => bodies.some(([a, b]) => a < at && at < b);
+      scan(/^[ \t]*use[ \t]+(?:function[ \t]+|const[ \t]+)?([\w\\]+)(?:[ \t]+as[ \t]+\w+)?[ \t]*;/gm, 'use', 1, undefined, inBody);
+      scan(/^[ \t]*use[ \t]+([\w\\]+)\\\{([^}]+)\}/gm, 'use', 1, (m) => m[2].split(',').map((s) => s.trim().split(/\s+as\s+/)[0]), inBody);
       // Expand group use into one import per name.
       for (let i = out.length - 1; i >= 0; i--) {
         const r = out[i];
@@ -181,6 +454,7 @@ export function extractImports(text: string, path: string): RawImport[] {
       }
       scan(/(?:require|include)(?:_once)?[ \t]*\(?[ \t]*(?:__DIR__[ \t]*\.[ \t]*)?['"]([^'"]+\.php)['"]/g, 'require');
       break;
+    }
     case 'css':
       scan(/@import[ \t]+(?:url\()?['"]?([^'")\s;]+)/g, 'import');
       scan(/@(?:use|forward)[ \t]+['"]([^'"]+)['"]/g, 'use');
@@ -606,16 +880,16 @@ export async function buildDependencyGraph(repo: RepoModel, fs: FsAdapter, optio
       if ('file' in r) to = r.file === from ? undefined : fileNode(r.file);
       else if ('dir' in r) to = dirNode(r.dir);
       else if (withExternals) to = node(`x:${r.external}`, 'external', r.external, r.group);
-      if (to === undefined) continue;
-      // Python `from pkg import mod`: also link the submodules that exist.
-      const extra: number[] = [];
-      if (imp.names?.length && 'dir' in r) {
-        for (const n of imp.names) {
-          const sub = resolver.files.has(`${r.dir}/${n}.py`) ? `${r.dir}/${n}.py` : resolver.files.has(`${r.dir}/${n}/__init__.py`) ? `${r.dir}/${n}/__init__.py` : undefined;
-          if (sub) extra.push(fileNode(sub));
-        }
+      // Python `from pkg import mod`: also link the submodules that exist. A package with an
+      // `__init__.py` keeps that edge too (importing from it runs it); a namespace package does not.
+      const pkg = !imp.names?.length ? undefined : 'dir' in r ? r.dir : 'file' in r && /(^|\/)__init__\.py$/.test(r.file) ? dirname(r.file) : undefined;
+      const subs: number[] = [];
+      for (const n of pkg !== undefined ? imp.names! : []) {
+        const sub = [join(pkg!, `${n}.py`), join(pkg!, n, '__init__.py')].find((p) => resolver.files.has(p));
+        if (sub && sub !== from) subs.push(fileNode(sub));
       }
-      for (const t of extra.length ? extra : [to]) {
+      const targets = 'dir' in r && subs.length ? subs : to === undefined ? subs : [to, ...subs];
+      for (const t of targets) {
         const key = `${fromNode}>${t}`;
         const e = edgeMap.get(key);
         if (e) {

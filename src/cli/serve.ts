@@ -1,21 +1,23 @@
 /**
  * Local web server for the visualizer UI (`structlens open`, and the MCP
  * server's open_visualizer fallback). Binds to 127.0.0.1, requires a random
- * token on every API call and rejects foreign Host headers (DNS rebinding).
+ * token for the page (which embeds it) and on every API call, and rejects
+ * foreign Host headers (DNS rebinding).
  */
 
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, watch, type FSWatcher, promises as fsp } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { analyzeFunction } from '../core/code/analyze';
-import { isBinaryFormat } from '../core/data/formats';
+import { decodeText, isBinaryFormat } from '../core/data/formats';
 import { findBridges, callBridge } from '../node/bridge';
 import { runDetached } from '../node/exec';
 import { describeTarget } from '../node/target';
+import { newToken, sameToken } from '../node/token';
 import type { Workspace } from '../node/workspace';
-import { DEFAULT_SETTINGS, type InitPayload, type RequestMap, type UiSettings, type ViewId } from '../shared/protocol';
+import { DEFAULT_SETTINGS, type InitPayload, type RequestMap, type SourceEdit, type UiSettings, type ViewId } from '../shared/protocol';
 import { VERSION } from '../shared/version';
 
 export interface ServeOptions {
@@ -35,8 +37,14 @@ export interface VisualizerServer {
   close(): Promise<void>;
 }
 
+const FORBIDDEN_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>StructLens</title></head>
+<body style="font-family: system-ui, sans-serif; padding: 24px">
+<p>This StructLens link is missing its access token. Open the full link that <code>structlens</code> printed (or that your AI agent shared).</p>
+</body></html>`;
+
 export async function startServer(ws: Workspace, opts: ServeOptions): Promise<VisualizerServer> {
-  const token = randomBytes(18).toString('base64url');
+  const token = newToken(18);
   const hostName = opts.host ?? '127.0.0.1';
   let settings: UiSettings = { ...DEFAULT_SETTINGS };
   const watchers = new Set<FSWatcher>();
@@ -116,6 +124,31 @@ export async function startServer(ws: Workspace, opts: ServeOptions): Promise<Vi
       case 'notify':
         process.stderr.write(`[ui] ${String(params.message)}\n`);
         return null;
+      case 'applyEdit': {
+        // Edits made in the visualizer: only when the file still has the text they were computed from.
+        const abs = ws.resolvePath(String(params.uri));
+        const bytes = await fsp.readFile(abs);
+        if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff)) throw new Error('UTF-16 files can only be edited in an editor.');
+        const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? '\uFEFF' : '';
+        let text = decodeText(bytes);
+        const edits = params.edits as SourceEdit[];
+        for (const e of edits) if (text.slice(e.check.from, e.offset + e.length) !== e.check.text) throw new Error('The file changed since the view loaded it. Try again in a moment.');
+        for (const e of [...edits].sort((a, b) => b.offset - a.offset)) text = text.slice(0, e.offset) + e.text + text.slice(e.offset + e.length);
+        await fsp.writeFile(abs, bom + text, 'utf8');
+        return null;
+      }
+      case 'loadSchema': {
+        const ref = typeof params.ref === 'string' ? params.ref.replace(/#.*$/, '') : '';
+        if (!ref) return null;
+        if (/^https?:/i.test(ref)) {
+          const r = await fetch(ref, { signal: AbortSignal.timeout(15_000), headers: { accept: 'application/schema+json, application/json, */*' } });
+          if (!r.ok) throw new Error(`Could not download ${ref}: HTTP ${r.status}`);
+          return { ref, text: await r.text() };
+        }
+        // Local schemas: relative to the data file, and only inside the workspace.
+        const abs = ws.resolvePath(/^file:/i.test(ref) ? ref : isAbsolute(ref) ? ref : resolve(dirname(ws.resolvePath(String(params.uri))), ref));
+        return { ref: pathToFileURL(abs).href, text: await fsp.readFile(abs, 'utf8') };
+      }
       default:
         throw new Error(`Unsupported request: ${method}`);
     }
@@ -127,7 +160,11 @@ export async function startServer(ws: Workspace, opts: ServeOptions): Promise<Vi
       if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return send(res, 403, 'Forbidden host');
       const url = new URL(req.url ?? '/', `http://${host}`);
       const p = url.pathname;
-      if (p === '/' || p === '/index.html') return send(res, 200, html(), 'text/html; charset=utf-8');
+      if (p === '/' || p === '/index.html') {
+        // The page embeds the token, so it needs the token too (the printed link carries it).
+        if (!sameToken(url.searchParams.get('token'), token)) return send(res, 403, FORBIDDEN_PAGE, 'text/html; charset=utf-8');
+        return send(res, 200, html(), 'text/html; charset=utf-8', { 'referrer-policy': 'no-referrer' });
+      }
       if (p === '/assets/main.js' || p === '/assets/main.css') {
         const file = join(opts.assetsDir, p.slice('/assets/'.length));
         if (!existsSync(file)) return send(res, 404, 'Run `npm run build` first');
@@ -135,7 +172,7 @@ export async function startServer(ws: Workspace, opts: ServeOptions): Promise<Vi
       }
       if (p === '/favicon.ico') return send(res, 204, '');
       if (!p.startsWith('/api/')) return send(res, 404, 'Not found');
-      if ((url.searchParams.get('token') ?? req.headers['x-structlens-token']) !== token) return send(res, 401, 'Bad token');
+      if (!sameToken(url.searchParams.get('token') ?? req.headers['x-structlens-token'], token)) return send(res, 401, 'Bad token');
 
       if (p === '/api/init') {
         const path = url.searchParams.get('path') ?? opts.initialPath ?? '.';
@@ -149,7 +186,7 @@ export async function startServer(ws: Workspace, opts: ServeOptions): Promise<Vi
             line: url.searchParams.has('line') ? Number(url.searchParams.get('line')) : undefined,
             settings,
             host: 'server',
-            capabilities: { reveal: !isBinaryFormat(target.format), code: true, repo: true, settings: true },
+            capabilities: { reveal: !isBinaryFormat(target.format), code: true, repo: true, settings: true, edit: !isBinaryFormat(target.format) },
             version: VERSION,
           };
           return json(res, 200, payload);

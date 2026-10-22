@@ -22,6 +22,8 @@ export interface TreeLayoutOptions {
   direction?: 'LR' | 'TB';
   /** Gap between parent and child (along the depth axis). */
   levelGap?: number;
+  /** Per-depth override: `levelGaps[d]` is the gap between depth d and d + 1 (e.g. room for edge labels). */
+  levelGaps?: ArrayLike<number | undefined>;
   /** Gap between siblings / neighbouring subtrees. */
   siblingGap?: number;
   layered?: boolean;
@@ -69,7 +71,7 @@ export function layoutTree(input: TreeLayoutInput, options: TreeLayoutOptions = 
     const bw = lr ? input.height[i] : input.width[i];
     const dh = lr ? input.width[i] : input.height[i];
     w[i] = bw + siblingGap;
-    h[i] = dh + levelGap;
+    h[i] = dh;
   }
 
   // Depth coordinates (pre-order) and post-order sequence.
@@ -87,6 +89,7 @@ export function layoutTree(input: TreeLayoutInput, options: TreeLayoutOptions = 
       }
     }
   }
+  for (const t of order) h[t] += options.levelGaps?.[depthOf[t]] ?? levelGap;
   if (options.layered) {
     let maxDepth = 0;
     for (const t of order) maxDepth = Math.max(maxDepth, depthOf[t]);

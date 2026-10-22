@@ -10,6 +10,8 @@ import type { SyntaxNode } from './treesitter';
 
 export type LoopKind = 'for' | 'forEach' | 'while' | 'doWhile' | 'infinite';
 
+export type JumpKind = 'return' | 'throw' | 'break' | 'continue' | 'fallthrough' | 'goto';
+
 export interface Case {
   label: string;
   body: Stmt[];
@@ -38,8 +40,11 @@ export type Stmt =
     }
   | { k: 'switch'; node: SyntaxNode; subject: string; subjectNode?: SyntaxNode | null; cases: Case[]; fallthrough: boolean; label?: string }
   | { k: 'try'; node: SyntaxNode; body: Stmt[]; handlers: Handler[]; else?: Stmt[]; finally?: Stmt[] }
-  | { k: 'jump'; node: SyntaxNode; jump: 'return' | 'throw' | 'break' | 'continue' | 'fallthrough'; text: string; label?: string; valueNode?: SyntaxNode | null }
+  | { k: 'jump'; node: SyntaxNode; jump: JumpKind; text: string; label?: string; valueNode?: SyntaxNode | null }
+  /** An expression that returns early when it fails (Rust `expr?`): `fail` labels the early-return edge. */
+  | { k: 'check'; node: SyntaxNode; text: string; fail: string }
   | { k: 'block'; node: SyntaxNode; header: string; body: Stmt[] }
+  /** A labeled statement; an empty body is a bare label (`end:` in PHP). */
   | { k: 'labeled'; node: SyntaxNode; label: string; body: Stmt[] };
 
 export interface SwitchShape {
@@ -76,6 +81,8 @@ export interface FlowRules {
   breaks: string[];
   continues: string[];
   fallthroughs?: string[];
+  /** `goto label` (resolved to the labeled statement of the same function). */
+  gotos?: string[];
   /** Statements that wrap a body with a header (`with`, `using`, `lock`, `synchronized`, `unsafe`). */
   withs?: string[];
   labeled?: string[];
@@ -119,12 +126,13 @@ export class IRConverter {
       breaks: mk(rules.breaks),
       continues: mk(rules.continues),
       fallthroughs: mk(rules.fallthroughs),
+      gotos: mk(rules.gotos),
       withs: mk(rules.withs),
       labeled: mk(rules.labeled),
       exprStatements: mk(rules.exprStatements),
       definitions: mk(rules.definitions),
     };
-    for (const k of ['ifs', 'unless', 'whiles', 'doWhiles', 'fors', 'forEachs', 'infinites', 'switches', 'tries', 'returns', 'throws', 'breaks', 'continues', 'fallthroughs', 'withs', 'labeled']) {
+    for (const k of ['ifs', 'unless', 'whiles', 'doWhiles', 'fors', 'forEachs', 'infinites', 'switches', 'tries', 'returns', 'throws', 'breaks', 'continues', 'fallthroughs', 'gotos', 'withs', 'labeled']) {
       for (const t of this.sets[k]) this.control.add(t);
     }
   }
@@ -200,6 +208,7 @@ export class IRConverter {
     if (this.is('breaks', t)) return [this.jump(node, 'break')];
     if (this.is('continues', t)) return [this.jump(node, 'continue')];
     if (this.is('fallthroughs', t)) return [this.jump(node, 'fallthrough')];
+    if (this.is('gotos', t)) return [this.jump(node, 'goto')];
     if (this.is('withs', t)) {
       const body = field(node, 'body') ?? lastBlockChild(node, this);
       return [{ k: 'block', node, header: headerText(node, body), body: this.stmts(body) }];
@@ -213,11 +222,11 @@ export class IRConverter {
     return [this.simple(node)];
   }
 
-  jump(node: SyntaxNode, jump: 'return' | 'throw' | 'break' | 'continue' | 'fallthrough', text?: string): Stmt {
+  jump(node: SyntaxNode, jump: JumpKind, text?: string): Stmt {
     const kidsNamed = named(node).filter((c) => !isComment(c));
     let label: string | undefined;
-    if (jump === 'break' || jump === 'continue') {
-      const l = field(node, 'label') ?? kidsNamed.find((c) => /label|identifier/.test(c.type));
+    if (jump === 'break' || jump === 'continue' || jump === 'goto') {
+      const l = field(node, 'label') ?? kidsNamed.find((c) => (jump === 'goto' ? /label|identifier|name/ : /label|identifier/).test(c.type));
       if (l) label = l.text.replace(/^'/, '');
     }
     const valueNode = jump === 'return' || jump === 'throw' ? (kidsNamed[0] ?? null) : null;
@@ -269,7 +278,7 @@ export class IRConverter {
   }
 
   loop(node: SyntaxNode, base: LoopKind): Stmt {
-    const kind = this.rules.loopKind ? this.rules.loopKind(node, base) : base;
+    const kind = loopKindOf(node, base, this.rules);
     const body = field(node, 'body') ?? lastBlockChild(node, this);
     const elseNode = field(node, 'alternative');
     let header: string;
@@ -277,6 +286,10 @@ export class IRConverter {
     if (kind === 'doWhile') {
       headerNode = field(node, 'condition');
       header = `while ${headerNode ? unparen(clean(headerNode.text)) : '…'}`;
+    } else if (base === 'doWhile') {
+      // `do { … } while (true)`
+      headerNode = field(node, 'condition');
+      header = `do … while ${headerNode ? clean(headerNode.text) : ''}`.trim();
     } else {
       header = headerText(node, body);
       headerNode = field(node, 'condition') ?? field(node, 'right') ?? field(node, 'value');
@@ -322,6 +335,24 @@ export class IRConverter {
       finally: shape.finally ? toStmts(shape.finally) : undefined,
     };
   }
+}
+
+/**
+ * Kind of a loop node: the rule's kind refined by the language, then by its condition.
+ * `while (true)`, `while True:`, `do … while (1)` and `for (;;)` only exit through `break`.
+ */
+export function loopKindOf(node: SyntaxNode, base: LoopKind, rules: FlowRules): LoopKind {
+  const kind = rules.loopKind ? rules.loopKind(node, base) : base;
+  if (kind !== 'while' && kind !== 'doWhile' && kind !== 'for') return kind;
+  const cond = field(node, 'condition');
+  // Languages with a `loopKind` hook (C++, Go) decide about a missing `for` condition themselves.
+  if (kind === 'for' && !rules.loopKind && (!cond || cond.type === 'empty_statement')) return 'infinite';
+  return cond && alwaysTrue(cond) ? 'infinite' : kind;
+}
+
+/** A condition that always holds: `true`, `True`, `(1)`, `true;`. */
+export function alwaysTrue(cond: SyntaxNode): boolean {
+  return /^\(*\s*(?:true|True|TRUE|1)\s*\)*\s*;?$/.test(cond.text);
 }
 
 /** Unwraps C++ `condition_clause` and similar holders. */
@@ -381,7 +412,9 @@ export function genericSwitch(
         labelNodes.add(k.id);
       }
     }
-    const isDefault = defSet.has(c.type) || /^\s*default\b/.test(c.text) || labels.some((l) => l === '_' || l === 'else');
+    // `case _ if cond:` is guarded, so it is not the catch-all.
+    const guarded = fields(c, 'guard').length > 0;
+    const isDefault = defSet.has(c.type) || /^\s*default\b/.test(c.text) || (!guarded && labels.some((l) => l === '_' || l === 'else'));
     const stmts = named(c).filter((k) => !labelNodes.has(k.id) && !isComment(k));
     cases.push({ label: isDefault && !labels.length ? 'default' : labels.join(', ') || 'case', body: stmts, isDefault, node: c });
   }

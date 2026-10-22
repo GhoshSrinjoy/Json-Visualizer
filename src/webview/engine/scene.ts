@@ -30,6 +30,8 @@ export interface Row {
   ref?: unknown;
   /** Right-aligned extra text (line numbers, sizes). */
   aside?: string;
+  /** CSS color drawn as a chip before the value (color values). */
+  swatch?: string;
 }
 
 export interface SceneNode {
@@ -66,6 +68,8 @@ export interface SceneEdge {
   /** Row index of `from` that the edge starts at (cards). */
   fromRow?: number;
   label?: string;
+  /** Where the label sits along the edge (0 = start, 1 = end); defaults to 0.35, next to the source. */
+  labelAt?: number;
   color?: ColorName | string;
   style?: EdgeStyle;
   width?: number;
@@ -89,3 +93,12 @@ export const ROW_H = 20;
 export const HEADER_H = 26;
 export const CARD_PAD_X = 10;
 export const CARD_PAD_Y = 6;
+
+/** Edge labels longer than this are truncated. */
+export const EDGE_LABEL_CHARS = 24;
+export const EDGE_LABEL_H = 16;
+
+/** World-space width of an edge label pill (layouts reserve room for it). */
+export function edgeLabelWidth(label: string, charW: number): number {
+  return Math.min(label.length, EDGE_LABEL_CHARS) * charW * 0.9 + 10;
+}

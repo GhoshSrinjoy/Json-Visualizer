@@ -1,8 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createMcpServer } from '../../src/mcp/server';
 import { Workspace } from '../../src/node/workspace';
@@ -45,7 +47,7 @@ describe('MCP server', () => {
   it('lists all tools with read-only annotations', async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ['call_graph', 'code_dataflow', 'code_flow', 'code_outline', 'data_query', 'data_schema', 'data_search', 'data_tree', 'dependency_graph', 'file_structure', 'find_symbol', 'open_visualizer', 'repo_overview', 'repo_tree'].sort(),
+      ['call_graph', 'code_dataflow', 'code_flow', 'code_outline', 'data_convert', 'data_diff', 'data_query', 'data_schema', 'data_search', 'data_tree', 'data_types', 'data_validate', 'dependency_graph', 'file_structure', 'find_symbol', 'open_visualizer', 'repo_overview', 'repo_tree'].sort(),
     );
     expect(tools.every((t) => t.annotations?.readOnlyHint)).toBe(true);
   });
@@ -78,6 +80,29 @@ describe('MCP server', () => {
     expect(ts.text).toContain('export interface Root');
   });
 
+  it('reports exact match counts, or a lower bound when the list was cut', async () => {
+    const exact = await call('data_search', { path: 'data/users.json', text: 'u2', limit: 11 });
+    expect(exact.text.split('\n')[0]).toBe('11 matches');
+    const cut = await call('data_search', { path: 'data/users.json', text: 'u2', limit: 5 });
+    expect(cut.text.split('\n')[0]).toBe('5+ matches (showing 5)');
+    expect(cut.text.split('\n').length).toBe(6);
+    // A query that stops at the internal cap on intermediate results.
+    const dir = mkdtempSync(join(tmpdir(), 'structlens-mcp-big-'));
+    try {
+      writeFileSync(join(dir, 'big.json'), JSON.stringify(Array.from({ length: 150_000 }, (_, i) => i)));
+      const server = createMcpServer(new Workspace(dir));
+      const big = new Client({ name: 'big', version: '1.0.0' });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      await server.connect(b);
+      await big.connect(a);
+      const r = (await big.callTool({ name: 'data_query', arguments: { path: 'big.json', query: '$..*', limit: 3 } })) as { content: { text: string }[] };
+      expect(r.content[0].text.split('\n')[0]).toBe('150,000+ matches (showing 3)');
+      await big.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('returns flow and data flow with mermaid', async () => {
     const f = await call('code_flow', { path: 'src/sample.ts', function: 'loadUsers' });
     expect(f.text).toContain('cyclomatic complexity');
@@ -98,6 +123,39 @@ describe('MCP server', () => {
     expect(deps.text).toContain('imports (1): src/other.ts');
     const sym = await call('find_symbol', { query: 'User' });
     expect(sym.text).toMatch(/src\/sample\.ts:37\s+class User/);
+  });
+
+  it('adopts the client’s roots before the first tool call and after they change', async () => {
+    let roots = [join(root, 'src')];
+    const ws = new Workspace(root);
+    const server = createMcpServer(ws);
+    const rootsClient = new Client({ name: 'roots', version: '1.0.0' }, { capabilities: { roots: { listChanged: true } } });
+    rootsClient.setRequestHandler(ListRootsRequestSchema, async () => ({ roots: roots.map((r) => ({ uri: pathToFileURL(r).href })) }));
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(b);
+    await rootsClient.connect(a);
+    const tree = async () => ((await rootsClient.callTool({ name: 'repo_tree', arguments: {} })) as { content: { text: string }[] }).content[0].text;
+    expect(await tree()).toContain('sample.ts');
+    expect(ws.roots).toEqual([join(root, 'src')]);
+    roots = [join(root, 'data')];
+    await rootsClient.sendRootsListChanged();
+    expect(await tree()).toContain('users.json');
+    expect(ws.roots).toEqual([join(root, 'data')]);
+    await rootsClient.close();
+  });
+
+  it('keeps its roots when the client does not answer roots/list', async () => {
+    const ws = new Workspace(root);
+    const server = createMcpServer(ws, { rootsTimeoutMs: 200 });
+    const silent = new Client({ name: 'silent', version: '1.0.0' }, { capabilities: { roots: {} } });
+    silent.setRequestHandler(ListRootsRequestSchema, () => new Promise(() => undefined));
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(b);
+    await silent.connect(a);
+    const r = (await silent.callTool({ name: 'repo_overview', arguments: {} })) as { content: { text: string }[]; isError?: boolean };
+    expect(r.isError).toBeFalsy();
+    expect(ws.roots).toEqual([root]);
+    await silent.close();
   });
 
   it('rejects paths outside the workspace and opens the visualizer', async () => {

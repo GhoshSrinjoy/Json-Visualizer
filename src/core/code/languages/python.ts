@@ -174,7 +174,9 @@ export const python: LanguageSpec = {
   functionBody: (fn) => field(fn, 'body'),
   params: (fn) => paramNames(field(fn, 'parameters'), SELF),
   functionTypes: ['function_definition', 'class_definition', 'lambda'],
-  decisionTypes: ['if_statement', 'elif_clause', 'for_statement', 'while_statement', 'except_clause', 'case_clause', 'conditional_expression', 'if_clause'],
+  decisionTypes: ['if_statement', 'elif_clause', 'except_clause', 'except_group_clause', 'conditional_expression', 'if_clause'],
+  // `if_clause` is a comprehension filter, or the guard of a `case` (part of that case).
+  decisionWeight: (n) => (n.type === 'if_clause' && n.parent?.type === 'case_clause' ? 0 : 1),
   calls: {
     call: { callee: (n) => field(n, 'function') },
   },

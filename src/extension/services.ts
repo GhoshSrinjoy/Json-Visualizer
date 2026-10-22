@@ -12,13 +12,14 @@ import { scanOptions } from './config';
 
 export class Services {
   private readonly workspaces = new Map<string, Workspace>();
-  readonly output: vscode.OutputChannel;
 
-  constructor(readonly context: vscode.ExtensionContext) {
-    this.output = vscode.window.createOutputChannel('StructLens');
+  constructor(
+    readonly context: vscode.ExtensionContext,
+    /** Created (and disposed) by extension.ts. */
+    readonly output: vscode.OutputChannel,
+  ) {
     ensureTreeSitter(join(context.extensionPath, 'dist', 'wasm'));
     context.subscriptions.push(
-      this.output,
       vscode.workspace.onDidChangeWorkspaceFolders(() => this.workspaces.clear()),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('structlens.repo')) this.workspaces.clear();
@@ -27,7 +28,7 @@ export class Services {
   }
 
   log(message: string): void {
-    this.output.appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
+    this.output.appendLine(`[${new Date().toTimeString().slice(0, 8)}] ${message}`);
   }
 
   folderFor(uri: vscode.Uri): vscode.Uri | undefined {
@@ -98,10 +99,5 @@ export class Services {
       this.log(`Installed MCP server ${VERSION} at ${root}`);
     }
     return cli;
-  }
-
-  /** After an extension update: refresh the installed copy if agents were connected before. */
-  async refreshStableServer(): Promise<void> {
-    if (existsSync(join(vscode.Uri.joinPath(this.context.globalStorageUri, 'server').fsPath, 'cli.js'))) await this.stableServer();
   }
 }

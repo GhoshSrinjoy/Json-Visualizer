@@ -153,14 +153,13 @@ export function dataSummaryText(tree: DataTree, name: string): string {
   return `${name}: ${tree.format.toUpperCase()}, ${formatBytes(tree.text.length)}, ${withCommas(tree.nodeCount())} values (${parts.join(', ')}), max depth ${tree.maxDepth}, parsed in ${Math.round(tree.parseMs)} ms${errs}`;
 }
 
-/** Path + JSON value lines for query/search hits. */
+/** Path + compact JSON value lines for query/search hits (numbers keep every digit of the source). */
 export function dataMatchesText(tree: DataTree, ids: number[], total: number, maxValueChars = 300): string {
   const out = [`${plural(total, 'match', 'matches')}${total > ids.length ? ` (showing ${ids.length})` : ''}`];
   for (const id of ids) {
     const loc = tree.hasPosition(id) ? ` (L${tree.lineCol(tree.start(id)).line + 1})` : '';
-    let v = tree.isContainer(id) ? tree.toJSON(id, undefined, maxValueChars + 1) : JSON.stringify(tree.value(id));
-    if (v.length > maxValueChars) v = v.slice(0, maxValueChars) + '…';
-    out.push(`${tree.pathString(id)}${loc}: ${v}`);
+    const { text, truncated } = tree.jsonText(id, undefined, maxValueChars);
+    out.push(`${tree.pathString(id)}${loc}: ${truncated ? text + '…' : text}`);
   }
   return out.join('\n');
 }
@@ -242,6 +241,7 @@ export function dataFlowText(g: DataFlowGraph): string {
 
 export function callGraphText(g: CallGraph, maxNodes = 150): string {
   const out = [`call graph: ${plural(g.nodes.filter((n) => n.kind !== 'external').length, 'function')}, ${plural(g.edges.length, 'call edge')} across ${plural(g.files.length, 'file')}`];
+  if (g.truncated) out.push(`note: only the first ${plural(g.files.length, 'file')} were analysed; narrow the paths (or use focus) for the rest`);
   const byId = new Map(g.nodes.map((n) => [n.id, n]));
   const name = (id: string, fromFile?: string) => {
     const n = byId.get(id);

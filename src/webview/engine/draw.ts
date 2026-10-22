@@ -1,6 +1,6 @@
 /** Canvas drawing primitives for scene nodes and edges (shared by screen, minimap and PNG export). */
 
-import { CARD_PAD_X, HEADER_H, ROW_H, type Row, type SceneEdge, type SceneNode } from './scene';
+import { CARD_PAD_X, EDGE_LABEL_CHARS, EDGE_LABEL_H, edgeLabelWidth, HEADER_H, ROW_H, type Row, type SceneEdge, type SceneNode } from './scene';
 import { resolveColor, withAlpha, type Palette } from './theme';
 
 export interface DrawContext {
@@ -11,8 +11,12 @@ export interface DrawContext {
   charW: number;
   hoverKey?: string;
   hoverRow?: number;
+  /** Selected row of a card (row-level selection, e.g. keyboard navigation). */
+  selectedRow?: { key: string; row: number };
   selected?: ReadonlySet<string>;
   matches?: ReadonlySet<string>;
+  /** Nodes with validation errors (outlined in the danger color). */
+  errors?: ReadonlySet<string>;
   /** Keys related to the hovered/selected node (neighbour highlighting). */
   related?: ReadonlySet<string>;
   dimOthers?: boolean;
@@ -118,7 +122,7 @@ export function drawNode(dc: DrawContext, n: SceneNode, alpha = 1): void {
     ctx.fill();
   }
   ctx.lineWidth = (selected ? 2.2 : 1.2) / Math.max(k, 0.35);
-  ctx.strokeStyle = selected ? p.selection : matched ? p.match : withAlpha(accent, isCard ? 0.42 : 0.75);
+  ctx.strokeStyle = selected ? p.selection : dc.errors?.has(n.key) ? p.colors.danger : matched ? p.match : withAlpha(accent, isCard ? 0.42 : 0.75);
   if (n.dashed) ctx.setLineDash([5 / Math.max(k, 0.3), 4 / Math.max(k, 0.3)]);
   ctx.stroke();
   if (n.dashed) ctx.setLineDash([]);
@@ -193,7 +197,12 @@ function drawRows(dc: DrawContext, n: SceneNode, top: number, rowPx: number): vo
     const r = rows[i];
     const ry = top + i * ROW_H;
     const cy = ry + ROW_H / 2 + 0.5;
-    if (dc.hoverKey === n.key && dc.hoverRow === i && !skeleton) {
+    if (dc.selectedRow?.key === n.key && dc.selectedRow.row === i) {
+      ctx.fillStyle = withAlpha(p.selection, p.dark ? 0.2 : 0.16);
+      ctx.fillRect(n.x + 1, ry, n.w - 2, ROW_H);
+      ctx.fillStyle = p.selection;
+      ctx.fillRect(n.x + 1, ry, 2, ROW_H);
+    } else if (dc.hoverKey === n.key && dc.hoverRow === i && !skeleton) {
       ctx.fillStyle = withAlpha(p.text, p.dark ? 0.06 : 0.05);
       ctx.fillRect(n.x + 1, ry, n.w - 2, ROW_H);
     }
@@ -237,6 +246,10 @@ function drawRows(dc: DrawContext, n: SceneNode, top: number, rowPx: number): vo
         }
       }
       if (r.value !== undefined) {
+        if (r.swatch) {
+          drawSwatch(dc, x + used * charW, cy, r.swatch);
+          used += 2;
+        }
         ctx.fillStyle = r.muted ? p.faint : resolveColor(p, r.valueColor, p.text);
         ctx.fillText(truncateChars(r.value, avail - used), x + used * charW, cy);
       }
@@ -249,6 +262,18 @@ function drawRows(dc: DrawContext, n: SceneNode, top: number, rowPx: number): vo
     }
     if (r.child || r.expandable) drawPort(dc, n.x + n.w, cy, resolveColor(p, r.valueColor, p.colors.accent), !!r.expanded);
   }
+}
+
+/** Color chip for color values; an unparsable color leaves the card color (canvas ignores it). */
+function drawSwatch(dc: DrawContext, x: number, cy: number, color: string): void {
+  const { ctx, p, k } = dc;
+  roundRectPath(ctx, x, cy - 5, 10, 10, 2.5);
+  ctx.fillStyle = p.card;
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 1 / Math.max(k, 0.5);
+  ctx.strokeStyle = withAlpha(p.text, 0.3);
+  ctx.stroke();
 }
 
 function drawPort(dc: DrawContext, x: number, y: number, color: string, expanded: boolean): void {
@@ -380,7 +405,7 @@ export function drawEdge(dc: DrawContext, e: SceneEdge, geom: EdgeGeometry, high
   ctx.stroke();
   ctx.setLineDash([]);
   if (e.arrow !== false && k > 0.12) drawArrow(dc, pts, geom.curve, color);
-  if (e.label && k > 0.35) drawEdgeLabel(dc, e.label, pts, geom.curve, color);
+  if (e.label && k > 0.35) drawEdgeLabel(dc, e, geom, color);
   ctx.globalAlpha = 1;
 }
 
@@ -402,26 +427,39 @@ function drawArrow(dc: DrawContext, pts: number[], curve: boolean, color: string
   ctx.fill();
 }
 
-function drawEdgeLabel(dc: DrawContext, label: string, pts: number[], curve: boolean, color: string): void {
-  const { ctx, p, charW } = dc;
-  // Place near the start so branch labels sit next to their decision.
-  let x: number;
-  let y: number;
-  if (curve) {
-    const t = 0.35;
+/** Centre of an edge's label. By default it sits near the start, so branch labels stay next to their decision. */
+export function edgeLabelPoint(e: SceneEdge, geom: EdgeGeometry): [number, number] {
+  const pts = geom.pts;
+  if (geom.curve) {
+    const t = e.labelAt ?? 0.35;
     const mt = 1 - t;
-    x = mt ** 3 * pts[0] + 3 * mt * mt * t * pts[2] + 3 * mt * t * t * pts[4] + t ** 3 * pts[6];
-    y = mt ** 3 * pts[1] + 3 * mt * mt * t * pts[3] + 3 * mt * t * t * pts[5] + t ** 3 * pts[7];
-  } else if (pts.length >= 6) {
-    x = (pts[0] + pts[2]) / 2;
-    y = (pts[1] + pts[3]) / 2;
-  } else {
-    x = pts[0] + (pts[2] - pts[0]) * 0.35;
-    y = pts[1] + (pts[3] - pts[1]) * 0.35;
+    return [
+      mt ** 3 * pts[0] + 3 * mt * mt * t * pts[2] + 3 * mt * t * t * pts[4] + t ** 3 * pts[6],
+      mt ** 3 * pts[1] + 3 * mt * mt * t * pts[3] + 3 * mt * t * t * pts[5] + t ** 3 * pts[7],
+    ];
   }
-  const text = truncateChars(label, 24);
-  const w = text.length * charW * 0.9 + 10;
-  const h = 16;
+  if (e.labelAt === undefined) {
+    if (pts.length >= 6) return [(pts[0] + pts[2]) / 2, (pts[1] + pts[3]) / 2];
+    return [pts[0] + (pts[2] - pts[0]) * 0.35, pts[1] + (pts[3] - pts[1]) * 0.35];
+  }
+  // Fraction of the polyline's length.
+  let total = 0;
+  for (let i = 2; i < pts.length; i += 2) total += Math.hypot(pts[i] - pts[i - 2], pts[i + 1] - pts[i - 1]);
+  let left = total * e.labelAt;
+  for (let i = 2; i < pts.length; i += 2) {
+    const seg = Math.hypot(pts[i] - pts[i - 2], pts[i + 1] - pts[i - 1]);
+    if (left <= seg && seg > 0) return [pts[i - 2] + ((pts[i] - pts[i - 2]) * left) / seg, pts[i - 1] + ((pts[i + 1] - pts[i - 1]) * left) / seg];
+    left -= seg;
+  }
+  return [pts[pts.length - 2], pts[pts.length - 1]];
+}
+
+function drawEdgeLabel(dc: DrawContext, e: SceneEdge, geom: EdgeGeometry, color: string): void {
+  const { ctx, p, charW } = dc;
+  const [x, y] = edgeLabelPoint(e, geom);
+  const text = truncateChars(e.label!, EDGE_LABEL_CHARS);
+  const w = edgeLabelWidth(text, charW);
+  const h = EDGE_LABEL_H;
   roundRectPath(ctx, x - w / 2, y - h / 2, w, h, 8);
   ctx.fillStyle = p.bg;
   ctx.fill();

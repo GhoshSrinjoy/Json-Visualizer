@@ -197,7 +197,10 @@ describe('C', () => {
     expect(n.filter((x) => x.kind === 'decision').map((x) => x.label)).toEqual(['!line']);
     const jump = n.find((x) => x.kind === 'jump')!;
     expect(jump.label).toBe('goto fail');
-    expect(parse.flow.edges.some((e) => e.from === jump.id)).toBe(false);
+    // `goto fail` jumps to the labeled statement, which is reachable.
+    const fail = n.find((x) => x.label === 'return FAILED;')!;
+    expect(parse.flow.edges).toContainEqual({ from: jump.id, to: fail.id, kind: 'break', label: undefined });
+    expect(fail.unreachable).toBeUndefined();
     expect(n.find((x) => x.kind === 'loop')!.label).toBe('while (*line)');
     expect(edgesOf(parse)).toEqual(expect.arrayContaining(['n -mutate-> out', 'n -assign-> counter']));
 

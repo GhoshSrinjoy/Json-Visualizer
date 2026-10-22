@@ -10,7 +10,9 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, promises as fsp, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, request, type Server } from 'node:http';
 import { homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
+import { isWithin } from './paths';
+import { bearerToken, sameToken } from './token';
 
 export interface BridgeInfo {
   pid: number;
@@ -42,11 +44,7 @@ function alive(pid: number): boolean {
   }
 }
 
-function within(path: string, root: string): boolean {
-  const p = resolve(path).toLowerCase();
-  const r = resolve(root).toLowerCase();
-  return p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
-}
+const within = (path: string, root: string) => isWithin(resolve(path), resolve(root));
 
 /** Live bridges, best match for `path` first (deepest root wins). */
 export function findBridges(path?: string): BridgeInfo[] {
@@ -104,8 +102,9 @@ export async function startBridge(opts: {
 }): Promise<{ dispose(): void; refresh(): void }> {
   const token = randomBytes(24).toString('hex');
   const server: Server = createServer((req, res) => {
-    if (req.method !== 'POST' || req.url !== '/open' || req.headers.authorization !== `Bearer ${token}`) {
-      res.writeHead(req.headers.authorization === `Bearer ${token}` ? 404 : 401).end();
+    const authorized = sameToken(bearerToken(req.headers.authorization), token);
+    if (req.method !== 'POST' || req.url !== '/open' || !authorized) {
+      res.writeHead(authorized ? 404 : 401).end();
       return;
     }
     let body = '';

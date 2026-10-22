@@ -1,7 +1,8 @@
 /** Builds the card graph for data documents from worker card data. */
 
 import { layoutTree } from '../../core/graph/tree-layout';
-import { CARD_PAD_X, HEADER_H, ROW_H, type ColorName, type Row, type Scene, type SceneEdge, type SceneNode } from '../engine/scene';
+import { CARD_PAD_X, edgeLabelWidth, HEADER_H, ROW_H, type ColorName, type Row, type Scene, type SceneEdge, type SceneNode } from '../engine/scene';
+import { colorOf } from '../values';
 import type { CardData, NodeInfo } from '../worker/protocol';
 
 export interface DataGraphState {
@@ -17,7 +18,15 @@ export interface DataSceneOptions {
   rootTitle: string;
   xml: boolean;
   pageSize: number;
+  /** Label each edge with the key it leads to (`users`, `[0]`, `<item>`). */
+  edgeLabels?: boolean;
+  /** Nodes that failed schema validation: their rows are drawn in the danger color. */
+  invalid?: ReadonlySet<number>;
+  /** Changes from a comparison, by node id: rows get a +, ~, ≠ or ↕ marker. */
+  marks?: ReadonlyMap<number, string>;
 }
+
+const MARKS: Record<string, [string, ColorName]> = { added: ['+', 'ok'], changed: ['~', 'warn'], type: ['≠', 'warn'], moved: ['↕', 'accent'] };
 
 export const nodeKey = (id: number) => `n${id}`;
 export const keyToId = (key: string) => Number(key.slice(1));
@@ -57,7 +66,7 @@ function titleOf(c: CardData, opts: DataSceneOptions, isRoot: boolean): string {
   return c.key ?? '';
 }
 
-function rowFor(r: NodeInfo, expanded: boolean, xml: boolean): Row {
+function rowFor(r: NodeInfo, expanded: boolean, xml: boolean, invalid?: ReadonlySet<number>, marks?: ReadonlyMap<number, string>): Row {
   const container = isContainer(r);
   const row: Row = {
     key: keyLabel(r),
@@ -72,6 +81,13 @@ function rowFor(r: NodeInfo, expanded: boolean, xml: boolean): Row {
     row.key = r.key === '#cdata' ? 'cdata' : 'text';
   }
   if (xml && r.element && container) row.key = `<${keyLabel(r)}>`;
+  if (r.type === 'string' && r.inline === undefined && !r.error) {
+    const color = colorOf(r.preview, r.key);
+    if (color) row.swatch = color;
+  }
+  if (invalid?.has(r.id)) row.keyColor = row.valueColor = 'danger';
+  const mark = MARKS[marks?.get(r.id) ?? ''];
+  if (mark) [row.icon, row.iconColor] = mark;
   if (container && r.count > 0) {
     row.expandable = true;
     row.expanded = expanded;
@@ -85,12 +101,13 @@ export function buildDataScene(state: DataGraphState, opts: DataSceneOptions): S
   const edges: SceneEdge[] = [];
   const index = new Map<number, number>();
   const children: number[][] = [];
+  const depth: number[] = [];
   const lr = opts.direction === 'LR';
 
   // Breadth-first over expanded cards reachable from the root.
-  const queue = [state.root];
+  const queue: [number, number][] = [[state.root, 0]];
   while (queue.length) {
-    const id = queue.shift()!;
+    const [id, d] = queue.shift()!;
     if (index.has(id)) continue;
     const c = state.cards.get(id);
     if (!c) continue;
@@ -102,10 +119,10 @@ export function buildDataScene(state: DataGraphState, opts: DataSceneOptions): S
     }
     c.rows.forEach((r) => {
       const expanded = isContainer(r) && state.expanded.has(r.id) && state.cards.has(r.id);
-      rows.push(rowFor(r, expanded, opts.xml));
+      rows.push(rowFor(r, expanded, opts.xml, opts.invalid, opts.marks));
       if (expanded) {
         kids.push(r.id);
-        queue.push(r.id);
+        queue.push([r.id, d + 1]);
       }
     });
     if (c.more > 0) {
@@ -118,7 +135,7 @@ export function buildDataScene(state: DataGraphState, opts: DataSceneOptions): S
     for (const r of rows) {
       const k = Math.min(r.key?.length ?? 0, 28);
       const v = Math.min(r.value?.length ?? 0, 46);
-      chars = Math.max(chars, k + (r.key !== undefined && r.value !== undefined ? 2 : 0) + v + (r.expandable ? 2 : 0));
+      chars = Math.max(chars, k + (r.key !== undefined && r.value !== undefined ? 2 : 0) + v + (r.expandable ? 2 : 0) + (r.swatch ? 2 : 0) + (r.icon ? r.icon.length + 1 : 0));
     }
     const w = Math.round(Math.min(460, Math.max(150, chars * opts.charW + CARD_PAD_X * 2 + 10)));
     const h = HEADER_H + Math.max(1, rows.length) * ROW_H + 6;
@@ -138,22 +155,34 @@ export function buildDataScene(state: DataGraphState, opts: DataSceneOptions): S
       h,
     });
     children.push(kids);
+    depth.push(d);
   }
 
-  // Edges from row ports to child cards.
-  nodes.forEach((n) => {
+  // Edges from row ports to child cards, labelled with the child's key (its card title).
+  const labelW: number[] = [];
+  nodes.forEach((n, ni) => {
     n.rows?.forEach((r, i) => {
-      if (r.child && index.has(keyToId(r.child))) {
-        edges.push({ from: n.key, to: r.child, fromRow: lr ? i : undefined, color: r.valueColor, arrow: false });
+      const ci = r.child ? index.get(keyToId(r.child)) : undefined;
+      if (ci === undefined) return;
+      const edge: SceneEdge = { from: n.key, to: r.child!, fromRow: lr ? i : undefined, color: r.valueColor, arrow: false };
+      if (opts.edgeLabels) {
+        // LR: centred in the gap between columns. TB: edges fan out from one point, so sit near the child.
+        edge.label = nodes[ci].title || '""';
+        edge.labelAt = lr ? 0.5 : 0.72;
+        labelW[depth[ni]] = Math.max(labelW[depth[ni]] ?? 0, edgeLabelWidth(edge.label, opts.charW));
       }
+      edges.push(edge);
     });
   });
 
   if (!nodes.length) return { nodes, edges, direction: opts.direction, width: 0, height: 0, edgeMode: 'curve' };
   const childIdx = children.map((ks) => ks.map((id) => index.get(id)!));
+  // Widen the gap after each level that has labels: LR needs the widest label, TB a little more height.
+  const levelGap = lr ? 70 : 56;
+  const levelGaps = labelW.map((w) => Math.max(levelGap, lr ? Math.ceil(w) + 36 : 72));
   const res = layoutTree(
     { width: nodes.map((n) => n.w), height: nodes.map((n) => n.h), children: childIdx, root: 0 },
-    { direction: opts.direction, levelGap: lr ? 70 : 56, siblingGap: lr ? 18 : 28, layered: true },
+    { direction: opts.direction, levelGap, levelGaps, siblingGap: lr ? 18 : 28, layered: true },
   );
   nodes.forEach((n, i) => {
     n.x = res.x[i];

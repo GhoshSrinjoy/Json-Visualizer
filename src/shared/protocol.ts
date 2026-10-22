@@ -11,7 +11,7 @@ import type { RepoModel } from '../core/repo/model';
 
 export type Mode = 'data' | 'code' | 'repo' | 'welcome';
 
-export type DataView = 'graph' | 'tree' | 'table' | 'schema' | 'text';
+export type DataView = 'graph' | 'tree' | 'table' | 'schema' | 'text' | 'compare';
 export type CodeView = 'structure' | 'flow' | 'dataflow' | 'calls';
 export type RepoView = 'tree' | 'treemap' | 'graph' | 'deps' | 'stats';
 export type ViewId = DataView | CodeView | RepoView;
@@ -21,6 +21,10 @@ export interface UiSettings {
   initialDepth: number;
   maxVisibleNodes: number;
   childPageSize: number;
+  /** Data graph: label each edge with the child's key. */
+  edgeLabels: boolean;
+  /** Validate data files against their $schema (or the editor's schema associations) when they open. */
+  autoValidate: boolean;
   theme: 'auto' | 'dark' | 'light';
   animations: boolean;
   minimap: boolean;
@@ -32,6 +36,8 @@ export const DEFAULT_SETTINGS: UiSettings = {
   initialDepth: 3,
   maxVisibleNodes: 1500,
   childPageSize: 50,
+  edgeLabels: true,
+  autoValidate: true,
   theme: 'auto',
   animations: true,
   minimap: true,
@@ -57,6 +63,8 @@ export interface InitPayload {
   line?: number;
   /** Message to show on the welcome screen (e.g. a load error). */
   notice?: string;
+  /** Data files: compare with this file (URI) right away. */
+  compare?: string;
   settings: UiSettings;
   host: 'vscode' | 'server' | 'browser';
   capabilities: {
@@ -68,8 +76,18 @@ export interface InitPayload {
     repo: boolean;
     /** Persist settings changes. */
     settings: boolean;
+    /** Data files can be edited from the visualizer. */
+    edit?: boolean;
   };
   version: string;
+}
+
+export interface SourceEdit {
+  offset: number;
+  length: number;
+  text: string;
+  /** Source text expected at [check.from, offset + length) before the edit. */
+  check: { from: number; text: string };
 }
 
 export interface SourceLocation {
@@ -98,6 +116,22 @@ export interface RequestMap {
   open: { params: { uri: string; visualize?: boolean; view?: ViewId; symbol?: string }; result: void };
   saveFile: { params: { name: string; data: string | Uint8Array; mime: string }; result: { saved: boolean; path?: string } };
   copyText: { params: { text: string }; result: void };
+  /**
+   * Replaces source ranges of a data file (edits made in the visualizer). Each edit carries
+   * the text it expects just before and inside its range, so a changed file is never corrupted.
+   */
+  applyEdit: { params: { uri: string; edits: SourceEdit[] }; result: void };
+  /**
+   * A JSON Schema for a data file: `ref` (URL, or path relative to the file) when given, otherwise
+   * the user's schema associations for the file (VS Code json.schemas / yaml.schemas); null when none.
+   */
+  loadSchema: { params: { uri: string; ref?: string }; result: { ref: string; text: string } | null };
+  /** Lets the user pick another data file (to compare with). */
+  pickDataFile: { params: { uri: string }; result: { name: string; bytes: Uint8Array; format?: DataFormat } | null };
+  /** Lets the user pick a schema file to validate against. */
+  pickSchema: { params: { uri: string }; result: { ref: string; text: string } | null };
+  /** Open a web or mailto link in the system browser / mail client. */
+  openExternal: { params: { url: string }; result: void };
   setSettings: { params: Partial<UiSettings>; result: void };
   notify: { params: { level: 'info' | 'warn' | 'error'; message: string }; result: void };
 }
@@ -126,7 +160,7 @@ export type HostEvent =
   | { type: 'cursor'; uri: string; offset?: number; line?: number }
   | { type: 'settings'; settings: UiSettings }
   /** Switch view / focus a symbol (e.g. from an AI agent request). */
-  | { type: 'navigate'; view?: ViewId; symbol?: string; line?: number; query?: string };
+  | { type: 'navigate'; view?: ViewId; symbol?: string; line?: number; query?: string; compare?: string };
 
 export interface EventMessage {
   kind: 'event';

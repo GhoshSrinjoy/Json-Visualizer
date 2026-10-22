@@ -1,15 +1,19 @@
-/** StructLens VS Code extension entry point. */
+/**
+ * StructLens VS Code extension entry point. StructLens activates in every
+ * window, so activation only registers what VS Code needs up front (commands,
+ * the custom editor, Copilot tools, the MCP server definition) and starts the
+ * agent bridge. The implementation (parsers, analysis, panels, tool code) is
+ * bundled separately in features.js and loaded the first time it is used.
+ */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import * as vscode from 'vscode';
-import '../core/code/languages';
-import { findAtLine } from '../core/code/symbols';
-import { analyzeCode } from '../core/code/analyze';
+import { startBridge } from '../node/bridge';
 import type { Mode, Target, ViewId } from '../shared/protocol';
 import { VERSION } from '../shared/version';
-import { connectAgents, registerLanguageModelTools, registerMcpProvider, startAgentBridge } from './agents';
-import { DataEditorProvider } from './customEditor';
-import { VisualizerPanel, type OpenOptions, type PanelDiagnostics } from './panel';
-import { Services } from './services';
+import type { Features } from './features';
+import type { OpenOptions, PanelDiagnostics } from './panel';
 
 /** Returned from `activate`: lets other extensions (and smoke tests) drive StructLens. */
 export interface StructLensApi {
@@ -20,88 +24,122 @@ export interface StructLensApi {
   panels(): PanelDiagnostics[];
 }
 
+interface Manifest {
+  contributes: { commands: { command: string }[]; languageModelTools?: { name: string; displayName: string }[] };
+}
+
+const TOOL_PREFIX = 'structlens_';
+let loaded: Features | undefined;
+
 export async function activate(context: vscode.ExtensionContext): Promise<StructLensApi> {
-  const services = new Services(context);
-  const run = (fn: (...args: never[]) => Promise<unknown>) => async (...args: never[]) => {
-    try {
-      await fn(...args);
-    } catch (e) {
-      void vscode.window.showErrorMessage(e instanceof Error ? e.message : String(e));
-    }
-  };
+  const output = vscode.window.createOutputChannel('StructLens');
+  context.subscriptions.push(output);
+  // (toLocaleTimeString would load ICU locale data during activation: ~10 ms.)
+  const log = (message: string) => output.appendLine(`[${new Date().toTimeString().slice(0, 8)}] ${message}`);
+  const cfg = () => vscode.workspace.getConfiguration('structlens');
+  // A separate bundle (see scripts/build.mjs), required on first use.
+  const features = (): Features => (loaded ??= (require('./features.js') as typeof import('./features')).createFeatures(context, output));
+  const manifest = context.extension.packageJSON as Manifest;
 
-  const activeUri = (arg?: unknown): vscode.Uri | undefined => {
-    if (arg instanceof vscode.Uri) return arg;
-    return vscode.window.activeTextEditor?.document.uri ?? (vscode.window.tabGroups.activeTabGroup.activeTab?.input as { uri?: vscode.Uri } | undefined)?.uri;
-  };
-
-  const open = async (uri: vscode.Uri | undefined, opts: OpenOptions = {}) => {
-    if (!uri) {
-      void vscode.window.showInformationMessage('Open a file (or select one in the Explorer) to visualize it.');
-      return;
-    }
-    await VisualizerPanel.open(services, uri, opts);
-  };
-
-  /** Opens a code view for the function at the cursor. */
-  const openAtCursor = async (view: ViewId) => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) return open(undefined);
-    const doc = editor.document;
-    const outline = await analyzeCode(vscode.workspace.asRelativePath(doc.uri, false), doc.getText(), doc.languageId);
-    if (!outline) {
-      void vscode.window.showWarningMessage(`StructLens can't analyse ${doc.languageId} code yet.`);
-      return;
-    }
-    const fn = findAtLine(outline.symbols, editor.selection.active.line);
-    await open(doc.uri, { view, symbol: fn?.id, line: editor.selection.active.line });
-  };
-
-  const workspaceFolder = async (): Promise<vscode.Uri | undefined> => {
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    if (folders.length <= 1) return folders[0]?.uri;
-    const pick = await vscode.window.showWorkspaceFolderPick({ placeHolder: 'Which folder?' });
-    return pick?.uri;
-  };
-
+  for (const { command } of manifest.contributes.commands) {
+    context.subscriptions.push(vscode.commands.registerCommand(command, (...args: unknown[]) => (command === 'structlens.showLog' ? output.show() : features().runCommand(command, args))));
+  }
   context.subscriptions.push(
-    vscode.commands.registerCommand('structlens.open', run(async (arg?: vscode.Uri) => open(activeUri(arg)))),
-    vscode.commands.registerCommand('structlens.openFile', run(async (arg?: vscode.Uri) => open(activeUri(arg)))),
-    vscode.commands.registerCommand('structlens.openFolder', run(async (arg?: vscode.Uri) => open(arg instanceof vscode.Uri ? arg : await workspaceFolder()))),
-    vscode.commands.registerCommand('structlens.openWorkspace', run(async () => open(await workspaceFolder()))),
-    vscode.commands.registerCommand('structlens.showFlow', run(async () => openAtCursor('flow'))),
-    vscode.commands.registerCommand('structlens.showDataFlow', run(async () => openAtCursor('dataflow'))),
-    vscode.commands.registerCommand('structlens.showCalls', run(async () => openAtCursor('calls'))),
-    vscode.commands.registerCommand('structlens.showStructure', run(async () => openAtCursor('structure'))),
-    vscode.commands.registerCommand('structlens.showDependencies', run(async (arg?: vscode.Uri) => open(arg instanceof vscode.Uri ? arg : await workspaceFolder(), { view: 'deps' }))),
-    vscode.commands.registerCommand('structlens.showTreemap', run(async (arg?: vscode.Uri) => open(arg instanceof vscode.Uri ? arg : await workspaceFolder(), { view: 'treemap' }))),
-    vscode.commands.registerCommand('structlens.connectAgents', run(async () => connectAgents(services))),
-    vscode.commands.registerCommand('structlens.showLog', () => services.output.show()),
-    vscode.window.registerCustomEditorProvider(DataEditorProvider.viewType, new DataEditorProvider(services), {
-      webviewOptions: { retainContextWhenHidden: true },
-      supportsMultipleEditorsPerDocument: true,
-    }),
-    vscode.window.registerWebviewPanelSerializer(VisualizerPanel.viewType, {
-      async deserializeWebviewPanel(panel, state: { mode?: Mode; target?: Target; view?: ViewId } | undefined) {
-        if (state?.mode && state.target) VisualizerPanel.revive(services, panel, { mode: state.mode, target: state.target, view: state.view });
-        else panel.dispose();
+    vscode.window.registerCustomEditorProvider(
+      'structlens.dataEditor',
+      {
+        openCustomDocument: (uri) => ({ uri, dispose: () => undefined }),
+        resolveCustomEditor: (document, panel) => features().resolveCustomEditor(document, panel),
       },
+      { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: true },
+    ),
+    vscode.window.registerWebviewPanelSerializer('structlens.visualizer', {
+      deserializeWebviewPanel: async (panel, state: { mode?: Mode; target?: Target; view?: ViewId } | undefined) => features().revivePanel(panel, state),
     }),
-    ...registerLanguageModelTools(services),
   );
 
-  const mcp = registerMcpProvider(services);
-  if (mcp) context.subscriptions.push(mcp);
-  void startAgentBridge(services).then((b) => b && context.subscriptions.push(b));
-  void services.refreshStableServer().catch((e) => services.log(`Could not update the MCP server copy: ${(e as Error).message}`));
-  services.log(`StructLens activated (${vscode.env.appName} ${vscode.version}).`);
+  // Copilot tools: names and schemas come from package.json (scripts/gen-manifest.mjs); the code loads on first call.
+  if (vscode.lm?.registerTool && cfg().get<boolean>('ai.copilotTools', true)) {
+    for (const tool of manifest.contributes.languageModelTools ?? []) {
+      const title = tool.displayName.replace(/^StructLens:\s*/, '');
+      context.subscriptions.push(
+        vscode.lm.registerTool<Record<string, unknown>>(tool.name, {
+          prepareInvocation: () => ({ invocationMessage: `StructLens: ${title.toLowerCase()}…` }),
+          invoke: (options) => features().invokeTool(tool.name.slice(TOOL_PREFIX.length), options.input ?? {}),
+        }),
+      );
+    }
+  }
+
+  const lm = vscode.lm as typeof vscode.lm & { registerMcpServerDefinitionProvider?: typeof vscode.lm.registerMcpServerDefinitionProvider };
+  if (lm?.registerMcpServerDefinitionProvider) {
+    const changed = new vscode.EventEmitter<void>();
+    context.subscriptions.push(
+      lm.registerMcpServerDefinitionProvider('structlens.mcp', {
+        onDidChangeMcpServerDefinitions: changed.event,
+        provideMcpServerDefinitions: async () => (cfg().get<boolean>('ai.mcpServer', false) ? features().mcpServerDefinitions() : []),
+      }),
+      vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('structlens.ai.mcpServer') && changed.fire()),
+      vscode.workspace.onDidChangeWorkspaceFolders(() => changed.fire()),
+      changed,
+    );
+  }
+
+  if (cfg().get<boolean>('ai.bridge', true)) startAgentBridge(context, log, (req) => features().openFromAgent(req));
+
+  // After an update: refresh the copy of the MCP server that agent configs point at (if agents were connected).
+  const server = join(context.globalStorageUri.fsPath, 'server');
+  if (existsSync(join(server, 'cli.js')) && readStamp(join(server, 'VERSION')) !== VERSION) {
+    void Promise.resolve()
+      .then(() => features().services.stableServer())
+      .catch((e) => log(`Could not update the MCP server copy: ${(e as Error).message}`));
+  }
+
+  log(`StructLens activated (${vscode.env.appName} ${vscode.version}).`);
   return {
     version: VERSION,
-    open: async (uri, options) => void (await VisualizerPanel.open(services, uri, options)),
-    panels: () => VisualizerPanel.all().map((p) => ({ ...p.diagnostics, requests: { ...p.diagnostics.requests }, errors: [...p.diagnostics.errors] })),
+    open: (uri, options) => features().open(uri, options),
+    panels: () => loaded?.panels() ?? [],
   };
 }
 
 export function deactivate(): void {
-  for (const p of VisualizerPanel.all()) p.dispose();
+  loaded?.dispose();
+}
+
+function readStamp(file: string): string {
+  try {
+    return readFileSync(file, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Lets external agents (the MCP server started by Claude Code, Codex…) open views in this window.
+ * Only windows with a folder open take part: agents address files by path.
+ */
+function startAgentBridge(context: vscode.ExtensionContext, log: (message: string) => void, onOpen: Parameters<typeof startBridge>[0]['onOpen']): void {
+  const roots = () => (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+  let bridge: Promise<Awaited<ReturnType<typeof startBridge>> | undefined> | undefined;
+  const sync = () => {
+    if (bridge) {
+      void bridge.then((b) => b?.refresh());
+      return;
+    }
+    if (!roots().length) return;
+    bridge = startBridge({ roots, version: VERSION, app: vscode.env.appName, onOpen }).then(
+      (b) => {
+        context.subscriptions.push(b);
+        log('Agent bridge ready: external AI agents can open StructLens views in this window.');
+        return b;
+      },
+      (e) => {
+        log(`Agent bridge unavailable: ${(e as Error).message}`);
+        return undefined;
+      },
+    );
+  };
+  context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(sync));
+  sync();
 }

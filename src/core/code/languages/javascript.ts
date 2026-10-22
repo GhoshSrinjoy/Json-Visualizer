@@ -342,7 +342,7 @@ function makeSpec(id: string, name: string, grammar: string, extensions: string[
       return single ? [single.text] : [];
     },
     functionTypes: FUNCTION_TYPES,
-    decisionTypes: ['if_statement', 'for_statement', 'for_in_statement', 'while_statement', 'do_statement', 'switch_case', 'catch_clause', 'ternary_expression'],
+    decisionTypes: ['if_statement', 'catch_clause', 'ternary_expression'],
     calls: {
       call_expression: { callee: (n) => field(n, 'function') },
       new_expression: { callee: (n) => field(n, 'constructor'), kind: 'new' },

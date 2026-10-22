@@ -398,6 +398,14 @@ function CallsPane({ target, symbolId, selection, setSelection, reveal, openFlow
         </button>
       </div>
       <IconButton icon="external" title={externals ? 'Hide library calls' : 'Show library calls'} active={externals} onClick={() => setExternals(!externals)} />
+      {graph?.truncated && (
+        <span
+          style={{ color: 'var(--warn)', fontSize: '11px', padding: '0 6px', alignSelf: 'center' }}
+          title="The workspace has more code files than the call graph analyses: calls into the others are missing."
+        >
+          first {graph.files.length.toLocaleString()} files
+        </span>
+      )}
     </div>
   );
   if (error) return <CenterMessage>{error}</CenterMessage>;

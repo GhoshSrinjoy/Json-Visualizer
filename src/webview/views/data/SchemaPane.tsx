@@ -1,6 +1,8 @@
-/** Inferred schema of the document (or the selected subtree), with JSON Schema / TypeScript export. */
+/** Inferred schema of the document (or the selected subtree), plus generated types in ten languages and JSON Schema. */
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { TYPE_TARGETS, type TypeTarget } from '../../../core/data/targets';
+import type { PathSegment } from '../../../core/data/tree';
 import { Icon } from '../../components/icons';
 import { CenterMessage } from '../../components/ui';
 import { copy, host, toast } from '../../store';
@@ -8,11 +10,42 @@ import type { SchemaView } from '../../worker/protocol';
 import { useData } from './context';
 import { stem } from '../shared';
 
+/** What the code view can show: types per language, the JSON Schema, or compact text for prompts. */
+const OUTPUTS: { id: TypeTarget | 'json-schema' | 'text'; label: string; ext: string; mime: string }[] = [
+  ...TYPE_TARGETS.map((t) => ({ ...t, mime: 'text/plain' })),
+  { id: 'json-schema', label: 'JSON Schema', ext: 'schema.json', mime: 'application/schema+json' },
+  { id: 'text', label: 'Compact text (for AI prompts)', ext: 'schema.txt', mime: 'text/plain' },
+];
+let lastOutput: (typeof OUTPUTS)[number]['id'] = 'typescript';
+
+/** `users`, `[3]`, `my-file.json` → `Users`, `Item`, `MyFile` (the generated root type's name). */
+function typeName(source: string): string {
+  const words = source.replace(/\.[^.]+$/, '').match(/[A-Za-z0-9]+/g) ?? [];
+  const name = words.map((w) => w[0].toUpperCase() + w.slice(1)).join('');
+  return /^[A-Za-z]/.test(name) ? name : 'Root';
+}
+
 export function SchemaPane() {
-  const { client, summary, selected, target } = useData();
+  const ctx = useData();
+  const { client, summary, selected, target } = ctx;
   const [scope, setScope] = useState<number>(summary.root);
   const [schema, setSchema] = useState<SchemaView | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [scopePath, setScopePath] = useState('$');
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const restore = useRef<PathSegment[] | null>(null);
+  const [mode, setMode] = useState<'tree' | 'code'>('tree');
+  const [output, setOutput] = useState(lastOutput);
+  const [code, setCode] = useState<string | null>(null);
+
+  useEffect(
+    () =>
+      ctx.beforeReload(async () => {
+        [restore.current] = await client.call('pathsOf', { ids: [scopeRef.current] });
+      }),
+    [client],
+  );
 
   // Follow the selection when it is a container.
   useEffect(() => {
@@ -24,25 +57,57 @@ export function SchemaPane() {
 
   useEffect(() => {
     let alive = true;
-    setSchema(null);
-    void Promise.all([client.call('schema', { id: scope }), client.call('detail', { id: scope, maxChars: 0 })]).then(([s, d]) => {
+    (async () => {
+      // After a re-parse, find the scope again by path (ids change).
+      const path = restore.current;
+      restore.current = null;
+      let id = scope;
+      if (path) {
+        id = (await client.call('idsOf', { paths: [path] }))[0];
+        if (id < 0) id = summary.root;
+        if (id !== scope) return alive && setScope(id);
+      }
+      const [s, d] = await Promise.all([client.call('schema', { id }), client.call('detail', { id, maxChars: 0 })]);
       if (!alive) return;
       setSchema(s);
       setScopePath(d.path);
-    });
+      setError(null);
+    })().catch((e: Error) => alive && setError(e.message));
     return () => {
       alive = false;
     };
-  }, [client, scope]);
+  }, [client, scope, summary]);
 
-  const exportAs = async (kind: 'json-schema' | 'typescript' | 'text', save = false) => {
-    const text = await client.call('exportSchema', { id: scope, kind });
-    if (!save) return copy(text, kind === 'typescript' ? 'TypeScript types copied' : kind === 'json-schema' ? 'JSON Schema copied' : 'Schema copied');
-    const ext = kind === 'typescript' ? 'd.ts' : kind === 'json-schema' ? 'schema.json' : 'schema.txt';
-    const r = await host().request('saveFile', { name: `${stem(target.name)}.${ext}`, data: text, mime: kind === 'json-schema' ? 'application/schema+json' : 'text/plain' });
+  const rootName = typeName(scope === summary.root ? target.name : scopePath.split(/[.[\]'"]+/).filter(Boolean).pop() ?? 'Root');
+  const generate = (id: (typeof OUTPUTS)[number]['id']) =>
+    id === 'json-schema' || id === 'text' ? client.call('exportSchema', { id: scope, kind: id }) : client.call('types', { id: scope, target: id, rootName });
+
+  useEffect(() => {
+    if (mode !== 'code') return;
+    let alive = true;
+    setCode(null);
+    generate(output).then(
+      (t) => alive && setCode(t),
+      (e: Error) => alive && setCode(`// ${e.message}`),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [mode, output, scope, summary]);
+
+  const pickOutput = (id: (typeof OUTPUTS)[number]['id']) => {
+    lastOutput = id;
+    setOutput(id);
+  };
+
+  const save = async () => {
+    const o = OUTPUTS.find((x) => x.id === output)!;
+    const text = code ?? (await generate(output));
+    const r = await host().request('saveFile', { name: `${o.id === 'json-schema' || o.id === 'text' ? stem(target.name) : rootName}.${o.ext}`, data: text, mime: o.mime });
     if (r.path) toast(`Saved ${r.path}`);
   };
 
+  if (error) return <CenterMessage>{`Could not infer the schema: ${error}`}</CenterMessage>;
   if (!schema) return <CenterMessage spinner>Inferring schema…</CenterMessage>;
   return (
     <div class="view-fill">
@@ -55,20 +120,33 @@ export function SchemaPane() {
             </button>
           )}
           <span class="spacer" />
-          <button class="btn outline" onClick={() => exportAs('json-schema')} title="Copy as JSON Schema (draft 2020-12)">
-            <Icon name="braces" /> JSON Schema
-          </button>
-          <button class="btn outline" onClick={() => exportAs('typescript')} title="Copy as TypeScript interfaces">
-            <Icon name="code" /> TypeScript
-          </button>
-          <button class="btn outline" onClick={() => exportAs('text')} title="Copy compact text (great for AI prompts)">
-            <Icon name="sparkles" /> Text
-          </button>
-          <button class="btn" onClick={() => exportAs('json-schema', true)} title="Save JSON Schema file">
-            <Icon name="download" />
-          </button>
+          <div class="segmented" role="tablist">
+            <button class={`btn ${mode === 'tree' ? 'active' : ''}`} role="tab" aria-selected={mode === 'tree'} onClick={() => setMode('tree')}>
+              <Icon name="tree" /> Structure
+            </button>
+            <button class={`btn ${mode === 'code' ? 'active' : ''}`} role="tab" aria-selected={mode === 'code'} onClick={() => setMode('code')} title="Types for TypeScript, Zod, Python, Go, Rust, C#, Kotlin, Swift, Java; JSON Schema">
+              <Icon name="code" /> Types &amp; schema
+            </button>
+          </div>
+          {mode === 'code' && (
+            <>
+              <select class="lang-select" value={output} onChange={(e) => pickOutput((e.target as HTMLSelectElement).value as typeof output)}>
+                {OUTPUTS.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <button class="btn outline" disabled={code === null} onClick={() => code !== null && copy(code, `${OUTPUTS.find((o) => o.id === output)!.label} copied`)}>
+                <Icon name="copy" /> Copy
+              </button>
+              <button class="btn" onClick={() => void save()} title="Save to a file">
+                <Icon name="download" />
+              </button>
+            </>
+          )}
         </div>
-        <SchemaRow name="$" s={schema} depth={0} />
+        {mode === 'tree' ? <SchemaRow name="$" s={schema} depth={0} /> : code === null ? <CenterMessage spinner>Generating…</CenterMessage> : <pre class="code-view">{code}</pre>}
       </div>
     </div>
   );

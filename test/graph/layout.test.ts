@@ -62,6 +62,17 @@ describe('layoutTree', () => {
     expect(res.x[2]).toBeLessThan(res.x[3]);
   });
 
+  for (const layered of [false, true]) {
+    it(`uses per-depth level gaps (layered=${layered})`, () => {
+      // 0 → 1 → 2 chain plus a sibling 3 under 0.
+      const res = layoutTree({ width: [100, 80, 60, 120], height: [40, 40, 40, 40], children: [[1, 3], [2], [], []], root: 0 }, { direction: 'LR', layered, levelGap: 50, levelGaps: [200] });
+      expect(res.x[1]).toBeCloseTo(100 + 200);
+      expect(res.x[3]).toBeCloseTo(100 + 200);
+      // Depth 1 → 2 falls back to levelGap (after the widest card of the column when layered).
+      expect(res.x[2]).toBeCloseTo(300 + (layered ? 120 : 80) + 50);
+    });
+  }
+
   it('handles very deep and very wide trees quickly', () => {
     const n = 200_000;
     const chain = Array.from({ length: n }, (_, i) => (i + 1 < n ? [i + 1] : []));

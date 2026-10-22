@@ -95,6 +95,14 @@ describe('xlsx', () => {
     expect(value).toEqual({ S: [{ id: 1, column_2: 2, id_2: 3 }] });
   });
 
+  it('converts sheets with hundreds of thousands of rows', () => {
+    const rows: (string | number | null)[][] = [['n', 'label']];
+    for (let i = 0; i < 200_000; i++) rows.push(i === 150_000 ? [i, 'x', 'extra'] : [i, 'x']);
+    const sheet = sheetsToValue([{ name: 'Big', rows }]).Big as Record<string, unknown>[];
+    expect(sheet).toHaveLength(200_000);
+    expect(sheet[150_000]).toEqual({ n: 150_000, label: 'x', column_3: 'extra' });
+  });
+
   it('is detected by extension and parses into a queryable tree', async () => {
     expect(detectFormat('Budget.XLSX')).toBe('xlsx');
     const tree = parseData(await xlsxToJson(zip(WORKBOOK, true), inflate), 'xlsx');

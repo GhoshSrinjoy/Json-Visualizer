@@ -6,69 +6,30 @@
  *   structlens tree|overview|structure|schema|query|search|values|outline|flow|dataflow|calls|deps|find …
  */
 
-import { randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { dirname, join, resolve, sep } from 'node:path';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { dirname, join, resolve } from 'node:path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createMcpServer } from '../mcp/server';
+import { createMcpServer, startHttpServer, type HttpMcpServer, type McpSession } from '../mcp/server';
 import { TOOLS, toolErrorMessage, type ToolDef } from '../mcp/tools';
 import { callBridge, findBridges } from '../node/bridge';
+import { isWithin } from '../node/paths';
+import { newToken } from '../node/token';
 import { Workspace } from '../node/workspace';
 import { VERSION } from '../shared/version';
+import { parseArgs, type Args } from './args';
 import { openBrowser, startServer, type VisualizerServer } from './serve';
-import { CLIENTS, defaultLaunch, setupClient, type ClientId } from './setup';
+import { CLIENTS, defaultLaunch, NPX_UNSUPPORTED, setupClient, type ClientId } from './setup';
 import '../core/code/languages';
-
-interface Args {
-  command?: string;
-  positional: string[];
-  flags: Record<string, string | boolean | string[]>;
-}
-
-function parseArgs(argv: string[]): Args {
-  const out: Args = { positional: [], flags: {} };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--') {
-      out.positional.push(...argv.slice(i + 1));
-      break;
-    }
-    if (a.startsWith('--')) {
-      const eq = a.indexOf('=');
-      const rawKey = eq > 0 ? a.slice(2, eq) : a.slice(2);
-      const key = rawKey.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
-      let value: string | boolean;
-      if (eq > 0) value = a.slice(eq + 1);
-      else if (rawKey.startsWith('no-')) {
-        out.flags[rawKey.slice(3).replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = false;
-        continue;
-      } else if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) value = argv[++i];
-      else value = true;
-      const prev = out.flags[key];
-      out.flags[key] = prev === undefined ? value : Array.isArray(prev) ? [...prev, String(value)] : [String(prev), String(value)];
-    } else if (a === '-h') out.flags.help = true;
-    else if (a === '-v') out.flags.version = true;
-    else if (!out.command && out.positional.length === 0 && !a.startsWith('-') && isCommand(a)) out.command = a;
-    else out.positional.push(a);
-  }
-  return out;
-}
-
-function isCommand(a: string): boolean {
-  return ['open', 'mcp', 'setup', 'help', 'version', ...TOOLS.filter((t) => t.cli).map((t) => t.cli!.command)].includes(a);
-}
 
 const HELP = `StructLens ${VERSION} — structure of data files, code and repositories, for humans and AI agents.
 
 Usage
   structlens [path]                   Open the interactive visualizer in your browser (default: .)
   structlens open [path] [--view v] [--port n] [--no-browser]
-  structlens mcp [--root dir]… [--http port] [--host h] [--no-browser]
-                                      Start the MCP server (stdio by default)
-  structlens setup <client> [--scope project|user] [--npx] [--dry-run]
+  structlens mcp [--root dir]… [--http port] [--host h] [--token t] [--no-browser]
+                                      Start the MCP server (stdio by default; over HTTP clients
+                                      must send the printed token as a bearer token)
+  structlens setup <client> [--scope project|user] [--dry-run]
                                       Register the MCP server with: ${Object.keys(CLIENTS).join(', ')}
 
 Structure commands (same output AI agents get over MCP)
@@ -111,7 +72,7 @@ async function cmdOpen(args: Args): Promise<void> {
   }
   // Root: --root, else the current directory when the target is inside it, else the target's folder.
   const cwd = process.cwd();
-  const inCwd = target === cwd || target.startsWith(cwd + sep);
+  const inCwd = isWithin(target, cwd);
   const ws = new Workspace(args.flags.root ? roots(args.flags) : [inCwd ? cwd : statSync(target).isDirectory() ? target : dirname(target)]);
   const server = await startServer(ws, { port: Number(args.flags.port) || 0, host: typeof args.flags.host === 'string' ? args.flags.host : undefined, assetsDir: assetsDir() });
   const url = server.urlFor(ws.rel(target), typeof args.flags.view === 'string' ? args.flags.view : undefined);
@@ -123,80 +84,98 @@ async function cmdOpen(args: Args): Promise<void> {
 }
 
 async function cmdMcp(args: Args): Promise<void> {
+  // --root fixes the roots; otherwise each session adopts its client's roots.
   const explicitRoots = !!args.flags.root;
-  const ws = new Workspace(roots(args.flags));
-  let web: VisualizerServer | null = null;
-  const openVisualizer = async (req: { path: string; view?: string; symbol?: string; line?: number }) => {
-    const bridge = findBridges(req.path)[0];
-    if (bridge) {
-      try {
-        return await callBridge(bridge, req);
-      } catch (e) {
-        process.stderr.write(`[structlens] VS Code bridge failed: ${(e as Error).message}\n`);
+  const defaultRoots = roots(args.flags);
+  /** One MCP session: its own workspace (roots and caches) and, when needed, its own visualizer server. */
+  const session = (): McpSession => {
+    const ws = new Workspace(defaultRoots);
+    let web: Promise<VisualizerServer> | undefined;
+    const openVisualizer = async (req: { path: string; view?: string; symbol?: string; line?: number }) => {
+      const bridge = findBridges(req.path)[0];
+      if (bridge) {
+        try {
+          return await callBridge(bridge, req);
+        } catch (e) {
+          process.stderr.write(`[structlens] VS Code bridge failed: ${(e as Error).message}\n`);
+        }
       }
-    }
-    web ??= await startServer(ws, { assetsDir: assetsDir() });
-    const url = web.urlFor(ws.rel(req.path), req.view, req.symbol);
-    // --no-browser (headless / SSH sessions): hand the link to the agent instead.
-    if (args.flags.browser === false) return `The StructLens visualizer is running at ${url} — give this link to the user.`;
-    openBrowser(url);
-    return `Opened the StructLens visualizer in the user's browser: ${url}`;
+      web ??= startServer(ws, { assetsDir: assetsDir() }).catch((e) => {
+        web = undefined;
+        throw e;
+      });
+      const url = (await web).urlFor(ws.rel(req.path), req.view, req.symbol);
+      // --no-browser (headless / SSH sessions): hand the link to the agent instead.
+      if (args.flags.browser === false) return `The StructLens visualizer is running at ${url} — give this link to the user.`;
+      openBrowser(url);
+      return `Opened the StructLens visualizer in the user's browser: ${url}`;
+    };
+    return {
+      server: createMcpServer(ws, { openVisualizer, useClientRoots: !explicitRoots }),
+      close: async () => {
+        if (web) await (await web).close();
+      },
+    };
   };
-  const make = () => createMcpServer(ws, { openVisualizer, useClientRoots: !explicitRoots });
 
-  if (args.flags.http) {
-    const port = Number(args.flags.http === true ? 7811 : args.flags.http);
-    const host = typeof args.flags.host === 'string' ? args.flags.host : '127.0.0.1';
-    const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
-    const httpServer = createServer(async (req, res) => {
-      if (!req.url?.startsWith('/mcp')) {
-        res.writeHead(404).end('StructLens MCP endpoint is /mcp');
-        return;
-      }
-      const sid = req.headers['mcp-session-id'];
-      let entry = typeof sid === 'string' ? sessions.get(sid) : undefined;
-      if (!entry) {
-        const server = make();
-        const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (id) => {
-            sessions.set(id, { transport, server });
-          },
-          enableDnsRebindingProtection: true,
-          allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`, `${host}:${port}`],
-        });
-        transport.onclose = () => {
-          if (transport.sessionId) sessions.delete(transport.sessionId);
-        };
-        await server.connect(transport);
-        entry = { transport, server };
-      }
-      await entry.transport.handleRequest(req, res);
-    });
-    await new Promise<void>((r) => httpServer.listen(port, host, () => r()));
-    process.stderr.write(`StructLens MCP server (Streamable HTTP) listening on http://${host}:${port}/mcp\n`);
-    await new Promise<void>((r) => process.on('SIGINT', () => r()));
-    httpServer.close();
-    return;
+  if (args.flags.http) return serveHttp(args, session);
+  await session().server.connect(new StdioServerTransport());
+  process.stderr.write(`StructLens MCP server ${VERSION} ready (roots: ${defaultRoots.join(', ')})\n`);
+}
+
+async function serveHttp(args: Args, session: () => McpSession): Promise<void> {
+  const port = args.flags.http === true ? 7811 : Number(args.flags.http);
+  const host = typeof args.flags.host === 'string' ? args.flags.host : '127.0.0.1';
+  if (!Number.isInteger(port) || port < 0 || port > 65535) return fail(`Invalid port for --http: ${String(args.flags.http)}`);
+  if (args.flags.token === true || Array.isArray(args.flags.token)) return fail('--token needs one value: a random string of at least 16 characters.');
+  const pinned = typeof args.flags.token === 'string' ? args.flags.token : process.env.STRUCTLENS_TOKEN || undefined;
+  if (pinned !== undefined && (pinned.length < 16 || /\s/.test(pinned))) return fail('The token must be at least 16 characters long, without spaces.');
+  const token = pinned ?? newToken();
+  let server: HttpMcpServer;
+  try {
+    server = await startHttpServer({ port, host, token, createSession: session });
+  } catch (e) {
+    return fail(`Could not listen on ${host}:${port}: ${(e as Error).message}`);
   }
-  const server = make();
-  await server.connect(new StdioServerTransport());
-  process.stderr.write(`StructLens MCP server ${VERSION} ready (roots: ${ws.roots.join(', ')})\n`);
+  const config = { mcpServers: { structlens: { type: 'http', url: server.url, headers: { Authorization: `Bearer ${token}` } } } };
+  process.stderr.write(
+    [
+      `StructLens MCP server ${VERSION} (Streamable HTTP) listening on ${server.url}`,
+      `Clients must send the header  Authorization: Bearer ${token}`,
+      `  Claude Code:  claude mcp add --transport http structlens ${server.url} --header "Authorization: Bearer ${token}"`,
+      `  Other clients (JSON):  ${JSON.stringify(config)}`,
+      pinned ? 'Token pinned with --token / STRUCTLENS_TOKEN.' : 'The token changes on every start; pin it with --token <t> or the STRUCTLENS_TOKEN environment variable.',
+      '',
+    ].join('\n'),
+  );
+  await new Promise<void>((r) => process.on('SIGINT', () => r()));
+  await server.close();
+  process.exit(0);
+}
+
+function fail(message: string): void {
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
 }
 
 function cmdSetup(args: Args): void {
+  if (args.flags.npx !== undefined && args.flags.npx !== false) return fail(NPX_UNSUPPORTED);
   const client = args.positional[0] as ClientId | undefined;
   if (!client || !(client in CLIENTS)) {
     process.stdout.write(`Choose a client:\n${Object.entries(CLIENTS).map(([id, c]) => `  ${id.padEnd(16)} ${c.name} (${c.scopes.join('/')})`).join('\n')}\n\nExample: structlens setup claude --scope user\n`);
     process.exitCode = client ? 1 : 0;
     return;
   }
-  const lines = setupClient(client, {
-    scope: args.flags.scope === 'user' || args.flags.scope === 'project' ? args.flags.scope : undefined,
-    launch: defaultLaunch(process.argv[1], args.flags.npx === true),
-    dryRun: args.flags.dryRun === true,
-  });
-  process.stdout.write(lines.join('\n') + '\n');
+  try {
+    const lines = setupClient(client, {
+      scope: args.flags.scope === 'user' || args.flags.scope === 'project' ? args.flags.scope : undefined,
+      launch: defaultLaunch(),
+      dryRun: args.flags.dryRun === true,
+    });
+    process.stdout.write(lines.join('\n') + '\n');
+  } catch (e) {
+    fail((e as Error).message);
+  }
 }
 
 async function cmdTool(tool: ToolDef, args: Args): Promise<void> {
@@ -210,6 +189,7 @@ async function cmdTool(tool: ToolDef, args: Args): Promise<void> {
     input[name] = name === 'paths' ? args.positional.slice(i) : args.positional[i];
   });
   const text = await tool.run(ws, input, {
+    cli: true,
     openVisualizer: async (req) => {
       const bridge = findBridges(req.path)[0];
       if (bridge) return callBridge(bridge, req);

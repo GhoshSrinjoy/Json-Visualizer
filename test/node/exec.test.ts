@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { setupClient } from '../../src/cli/setup';
-import { quoteForCmd, runSync, which } from '../../src/node/exec';
+import { findNode, quoteForCmd, runSync, which } from '../../src/node/exec';
 
 describe('quoteForCmd', () => {
   it('quotes spaces and escapes cmd metacharacters', () => {
@@ -22,6 +22,27 @@ describe('which', () => {
   it('finds node on PATH and ignores missing commands', () => {
     expect(which(process.platform === 'win32' ? 'node.exe' : 'node')).toBeTruthy();
     expect(which('definitely-not-a-real-command-xyz')).toBeUndefined();
+  });
+});
+
+describe('findNode', () => {
+  it('returns the absolute path of a recent enough node on PATH', () => {
+    const node = findNode(18);
+    expect(node && isAbsolute(node)).toBe(true);
+    expect(existsSync(node!)).toBe(true);
+    expect(findNode(10_000)).toBeUndefined();
+  });
+
+  it('finds nothing when PATH has no node', () => {
+    const saved = { PATH: process.env.PATH, Path: process.env.Path };
+    process.env.PATH = '';
+    delete process.env.Path;
+    try {
+      expect(findNode()).toBeUndefined();
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.Path !== undefined) process.env.Path = saved.Path;
+    }
   });
 });
 

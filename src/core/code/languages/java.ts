@@ -234,10 +234,7 @@ export const java: LanguageSpec = {
   params: javaParams,
   // `class_body` covers anonymous classes (`new Runnable() { … }`).
   functionTypes: ['method_declaration', 'constructor_declaration', 'compact_constructor_declaration', 'lambda_expression', 'class_body', ...TYPE_DECLS],
-  decisionTypes: [
-    'if_statement', 'for_statement', 'enhanced_for_statement', 'while_statement', 'do_statement', 'catch_clause', 'ternary_expression',
-    'switch_label',
-  ],
+  decisionTypes: ['if_statement', 'catch_clause', 'ternary_expression'],
   calls: {
     method_invocation: {
       callee: (n) => field(n, 'name'),

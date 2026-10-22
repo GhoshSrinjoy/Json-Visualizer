@@ -255,11 +255,8 @@ function foreachParts(n: SyntaxNode): SyntaxNode[] {
 
 function special(node: SyntaxNode): Stmt[] | undefined {
   if (node.type === 'php_tag') return [];
-  if (node.type === 'goto_statement') {
-    // The target is not modelled: the jump ends this path.
-    const label = named(node)[0]?.text;
-    return [{ k: 'jump', node, jump: 'continue', text: `goto ${label ?? ''}`.trim(), label }];
-  }
+  // `end:` marks the statement after it as a `goto` target.
+  if (node.type === 'named_label_statement') return [{ k: 'labeled', node, label: named(node)[0]?.text ?? '', body: [] }];
   return undefined;
 }
 
@@ -279,10 +276,7 @@ export const php: LanguageSpec = {
     'function_definition', 'method_declaration', 'arrow_function', 'anonymous_function', 'class_declaration', 'anonymous_class',
     'interface_declaration', 'trait_declaration', 'enum_declaration',
   ],
-  decisionTypes: [
-    'if_statement', 'else_if_clause', 'for_statement', 'foreach_statement', 'while_statement', 'do_statement', 'case_statement',
-    'catch_clause', 'conditional_expression', 'match_conditional_expression',
-  ],
+  decisionTypes: ['if_statement', 'else_if_clause', 'catch_clause', 'conditional_expression', 'match_conditional_expression'],
   calls: {
     function_call_expression: { callee: (n) => field(n, 'function'), name: (n) => functionCallee(field(n, 'function')) },
     member_call_expression: { callee: (n) => field(n, 'name'), name: (n) => memberCallee(n, 'object') },
@@ -307,6 +301,7 @@ export const php: LanguageSpec = {
     throws: ['throw_expression'],
     breaks: ['break_statement'],
     continues: ['continue_statement'],
+    gotos: ['goto_statement'],
     exprStatements: ['expression_statement'],
     definitions: ['function_definition', 'class_declaration', 'interface_declaration', 'trait_declaration', 'enum_declaration'],
     fallthrough: true,

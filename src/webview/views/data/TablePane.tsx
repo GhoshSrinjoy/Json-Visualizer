@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { JSX } from 'preact';
+import type { PathSegment } from '../../../core/data/tree';
 import { registerCommands } from '../../commands';
 import { Icon } from '../../components/icons';
 import { CenterMessage } from '../../components/ui';
@@ -32,6 +33,33 @@ export function TablePane() {
   const [viewport, setViewport] = useState({ top: 0, height: 600 });
   const [widths, setWidths] = useState<number[]>([]);
   const generation = useRef(0);
+  const trailRef = useRef(trail);
+  trailRef.current = trail;
+  /** Trail by path, captured before a re-parse; the table waits until it is mapped to the new ids. */
+  const restore = useRef<PathSegment[][] | null>(null);
+  const pending = useRef(false);
+
+  useEffect(
+    () =>
+      ctx.beforeReload(async () => {
+        restore.current = await client.call('pathsOf', { ids: trailRef.current.map((t) => t.id) });
+      }),
+    [client],
+  );
+
+  // After a re-parse: the same containers again (as far as they still exist), with sort and filter kept.
+  useEffect(() => {
+    const paths = restore.current;
+    restore.current = null;
+    if (!paths) return;
+    pending.current = true;
+    void client.call('idsOf', { paths }).then((ids) => {
+      pending.current = false;
+      const end = ids.findIndex((id) => id < 0);
+      const kept = (end < 0 ? ids : ids.slice(0, end)).map((id, i) => ({ id, label: trailRef.current[i]?.label ?? '$' }));
+      setTrail(kept.length ? kept : [{ id: summary.root, label: '$' }]);
+    });
+  }, [summary]);
 
   // Follow external "open in table" requests.
   useEffect(() => {
@@ -44,6 +72,7 @@ export function TablePane() {
   }, [filter]);
 
   useEffect(() => {
+    if (pending.current) return;
     let alive = true;
     void client.call('tableInfo', { id: target, auto: trail.length === 1 && ctx.tableTarget === null }).then((i) => {
       if (!alive) return;
@@ -52,10 +81,15 @@ export function TablePane() {
         setTrail([{ id: i.id, label: i.path }]);
         return;
       }
-      setInfo(i);
+      setInfo((prev) => {
+        // A refresh of the same table keeps its sort and column widths.
+        if (!prev || prev.path !== i.path || prev.columns.join('\u0000') !== i.columns.join('\u0000')) {
+          setSort(null);
+          setWidths([]);
+        }
+        return i;
+      });
       setTotal(i.rows);
-      setSort(null);
-      setWidths([]);
       pages.current.clear();
       inflight.current.clear();
       generation.current++;
@@ -64,7 +98,7 @@ export function TablePane() {
     return () => {
       alive = false;
     };
-  }, [client, target]);
+  }, [client, trail]);
 
   useEffect(() => {
     pages.current.clear();

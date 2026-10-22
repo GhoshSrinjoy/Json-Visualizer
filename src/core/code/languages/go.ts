@@ -1,6 +1,6 @@
 /** Go. */
 
-import { genericSwitch, type IRConverter, type Stmt, type SwitchShape } from '../ir';
+import { alwaysTrue, genericSwitch, type IRConverter, type Stmt, type SwitchShape } from '../ir';
 import type { CodeSymbol, ImportRef, SymbolKind } from '../model';
 import { calleeName, paramNames, type LanguageSpec, type OutlineParts, type SymbolBuilder } from '../spec';
 import { childOfType, clean, docComment, field, fields, firstLine, isComment, named, rangeOf, statements, walk } from '../syntax';
@@ -271,7 +271,7 @@ export const go: LanguageSpec = {
   functionBody: (fn) => field(fn, 'body'),
   params: (fn) => [...names(field(fn, 'receiver')), ...names(field(fn, 'parameters'))],
   functionTypes: ['function_declaration', 'method_declaration', 'func_literal'],
-  decisionTypes: ['if_statement', 'for_statement', 'expression_case', 'type_case', 'communication_case'],
+  decisionTypes: ['if_statement'],
   calls: {
     call_expression: { callee: (n) => field(n, 'function'), name: (n) => goCallee(field(n, 'function')) },
     composite_literal: { callee: (n) => field(n, 'type'), name: (n) => literalType(field(n, 'type')), args: (n) => field(n, 'body'), kind: 'new' },
@@ -289,6 +289,7 @@ export const go: LanguageSpec = {
     breaks: ['break_statement'],
     continues: ['continue_statement'],
     fallthroughs: ['fallthrough_statement'],
+    gotos: ['goto_statement'],
     labeled: ['labeled_statement'],
     definitions: ['function_declaration', 'method_declaration', 'type_declaration'],
     fallthrough: false,
@@ -297,9 +298,11 @@ export const go: LanguageSpec = {
     loopKind: (n) => {
       if (childOfType(n, 'range_clause')) return 'forEach';
       const clause = childOfType(n, 'for_clause');
-      if (clause) return field(clause, 'condition') ? 'for' : 'infinite';
       const body = field(n, 'body');
-      return named(n).some((c) => c.id !== body?.id && !isComment(c)) ? 'while' : 'infinite';
+      const cond = clause ? field(clause, 'condition') : named(n).find((c) => c.id !== body?.id && !isComment(c));
+      // `for {}`, `for ;; {}` and `for true {}` only exit through break.
+      if (!cond || alwaysTrue(cond)) return 'infinite';
+      return clause ? 'for' : 'while';
     },
     special,
   },

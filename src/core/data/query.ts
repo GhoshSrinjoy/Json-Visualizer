@@ -31,7 +31,7 @@ type Expr =
   | { op: 'path'; root: '@' | '$'; segments: Segment[] }
   | { op: 'regex'; re: RegExp }
   | { op: 'not'; a: Expr }
-  | { op: 'and' | 'or'; a: Expr; b: Expr }
+  | { op: 'and' | 'or'; items: Expr[] }
   | { op: 'cmp'; cmp: string; a: Expr; b: Expr }
   | { op: 'fn'; name: string; args: Expr[] };
 
@@ -49,13 +49,31 @@ export interface QueryResult {
   /** Matches found (may exceed ids.length when truncated). */
   total: number;
   truncated: boolean;
+  /** Evaluation stopped at the internal cap on intermediate results, so `total` is a lower bound. */
+  capped: boolean;
 }
 
 // ---------------------------------------------------------------- parsing
 
+/** Nesting of brackets, parentheses, calls and `!` in a query (bounds the recursive descent). */
+const MAX_NESTING = 256;
+
+const ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' };
+
 class Parser {
   i = 0;
+  private depth = 0;
   constructor(readonly s: string) {}
+
+  /** Runs a nested production, failing cleanly instead of overflowing the stack. */
+  nested<T>(f: () => T): T {
+    if (++this.depth > MAX_NESTING) this.fail('Query is nested too deeply');
+    try {
+      return f();
+    } finally {
+      this.depth--;
+    }
+  }
 
   ws() {
     while (this.i < this.s.length && /\s/.test(this.s[this.i])) this.i++;
@@ -108,13 +126,15 @@ class Parser {
   }
 
   bracket(): Selector {
-    this.expect('[');
-    const items: Selector[] = [];
-    do {
-      items.push(this.bracketItem());
-    } while (this.eat(','));
-    this.expect(']');
-    return items.length === 1 ? items[0] : { kind: 'union', items };
+    return this.nested(() => {
+      this.expect('[');
+      const items: Selector[] = [];
+      do {
+        items.push(this.bracketItem());
+      } while (this.eat(','));
+      this.expect(']');
+      return items.length === 1 ? items[0] : { kind: 'union', items };
+    });
   }
 
   bracketItem(): Selector {
@@ -126,11 +146,9 @@ class Parser {
     }
     if (c === "'" || c === '"') return { kind: 'name', name: this.string() };
     if (c === '?') {
+      // `?(…)` is just a parenthesised expression: `?(@.a) && (@.b)` continues after it.
       this.i++;
-      const paren = this.eat('(');
-      const expr = this.orExpr();
-      if (paren) this.expect(')');
-      return { kind: 'filter', expr };
+      return { kind: 'filter', expr: this.orExpr() };
     }
     // index or slice
     const nums: (number | undefined)[] = [];
@@ -165,13 +183,19 @@ class Parser {
     return { kind: 'slice', start: nums[0], end: nums[1], step: nums[2] };
   }
 
+  /** Quoted string with JSON-style escapes (`\n`, `\uXXXX`, `\'`, …). */
   string(): string {
     const q = this.s[this.i++];
     let out = '';
     while (this.i < this.s.length && this.s[this.i] !== q) {
       if (this.s[this.i] === '\\' && this.i + 1 < this.s.length) {
         const n = this.s[++this.i];
-        out += n === 'n' ? '\n' : n === 't' ? '\t' : n;
+        if (n === 'u') {
+          const hex = this.s.slice(this.i + 1, this.i + 5);
+          if (!/^[0-9a-fA-F]{4}$/.test(hex)) this.fail('Invalid \\u escape');
+          out += String.fromCharCode(parseInt(hex, 16));
+          this.i += 4;
+        } else out += ESCAPES[n] ?? n;
       } else out += this.s[this.i];
       this.i++;
     }
@@ -181,20 +205,20 @@ class Parser {
   }
 
   orExpr(): Expr {
-    let a = this.andExpr();
-    while (this.eat('||')) a = { op: 'or', a, b: this.andExpr() };
-    return a;
+    const items = [this.andExpr()];
+    while (this.eat('||')) items.push(this.andExpr());
+    return items.length === 1 ? items[0] : { op: 'or', items };
   }
   andExpr(): Expr {
-    let a = this.unary();
-    while (this.eat('&&')) a = { op: 'and', a, b: this.unary() };
-    return a;
+    const items = [this.unary()];
+    while (this.eat('&&')) items.push(this.unary());
+    return items.length === 1 ? items[0] : { op: 'and', items };
   }
   unary(): Expr {
     this.ws();
     if (this.peek() === '!' && this.peek(1) !== '=') {
       this.i++;
-      return { op: 'not', a: this.unary() };
+      return { op: 'not', a: this.nested(() => this.unary()) };
     }
     return this.comparison();
   }
@@ -215,7 +239,7 @@ class Parser {
     const c = this.peek();
     if (c === '(') {
       this.i++;
-      const e = this.orExpr();
+      const e = this.nested(() => this.orExpr());
       this.expect(')');
       return e;
     }
@@ -250,7 +274,7 @@ class Parser {
       if (this.eat('(')) {
         const args: Expr[] = [];
         if (!this.eat(')')) {
-          do args.push(this.orExpr());
+          do args.push(this.nested(() => this.orExpr()));
           while (this.eat(','));
           this.expect(')');
         }
@@ -298,6 +322,7 @@ export function runQuery(tree: DataTree, query: string, limit = 1000, from = tre
   // Intermediate node lists are capped so `$..*` on huge documents stays bounded.
   const hardCap = Math.max(limit * 100, 100_000);
   let nodes = [from];
+  let capped = false;
   for (const seg of segs) {
     const next: number[] = [];
     const seen = seg.descendant ? new Set<number>() : undefined;
@@ -315,13 +340,16 @@ export function runQuery(tree: DataTree, query: string, limit = 1000, from = tre
           if (next.length > hardCap) break;
         }
       } else select(tree, id, seg.selector, (c) => next.push(c));
-      if (next.length > hardCap) break;
+      if (next.length > hardCap) {
+        capped = true;
+        break;
+      }
     }
     nodes = next;
     if (!nodes.length) break;
   }
   const total = nodes.length;
-  return { ids: nodes.slice(0, limit), total, truncated: total > limit };
+  return { ids: nodes.slice(0, limit), total, truncated: total > limit, capped };
 }
 
 /** In XML, `name` followed by `[i]` addresses the i-th same-named sibling. */
@@ -420,9 +448,9 @@ function evalExpr(tree: DataTree, e: Expr, current: number): Value {
     case 'not':
       return { kind: 'value', v: !truthy(evalExpr(tree, e.a, current), tree) };
     case 'and':
-      return { kind: 'value', v: truthy(evalExpr(tree, e.a, current), tree) && truthy(evalExpr(tree, e.b, current), tree) };
+      return { kind: 'value', v: e.items.every((x) => truthy(evalExpr(tree, x, current), tree)) };
     case 'or':
-      return { kind: 'value', v: truthy(evalExpr(tree, e.a, current), tree) || truthy(evalExpr(tree, e.b, current), tree) };
+      return { kind: 'value', v: e.items.some((x) => truthy(evalExpr(tree, x, current), tree)) };
     case 'cmp': {
       const a = scalar(tree, evalExpr(tree, e.a, current));
       const bv = evalExpr(tree, e.b, current);

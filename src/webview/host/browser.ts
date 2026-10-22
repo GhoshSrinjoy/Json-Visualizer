@@ -4,10 +4,10 @@
  * VS Code extension or the CLI.
  */
 
-import { detectFormat } from '../../core/data/formats';
+import { decodeText, detectFormat } from '../../core/data/formats';
 import { DEFAULT_SETTINGS, type InitPayload, type RequestMap, type RequestName, type UiSettings } from '../../shared/protocol';
 import { VERSION } from '../../shared/version';
-import { BaseHost } from './host';
+import { BaseHost, fetchSchema, openWebLink, pickDataFile, pickTextFile } from './host';
 import { download } from './server';
 
 const SETTINGS_KEY = 'structlens.settings';
@@ -47,11 +47,32 @@ export class BrowserHost extends BaseHost {
           // storage unavailable (private mode); settings stay in memory
         }
         return undefined as RequestMap[K]['result'];
+      case 'applyEdit': {
+        const p = params as RequestMap['applyEdit']['params'];
+        const d = this.docs.get(p.uri);
+        if (!d) throw new Error('Document not found');
+        let text = decodeText(d.bytes);
+        for (const e of p.edits) if (text.slice(e.check.from, e.offset + e.length) !== e.check.text) throw new Error('The document changed since the view loaded it.');
+        for (const e of [...p.edits].sort((a, b) => b.offset - a.offset)) text = text.slice(0, e.offset) + e.text + text.slice(e.offset + e.length);
+        this.updateDocument(p.uri, text);
+        return undefined as RequestMap[K]['result'];
+      }
+      case 'loadSchema': {
+        const { ref } = params as RequestMap['loadSchema']['params'];
+        return (ref && /^https?:/i.test(ref) ? await fetchSchema(ref) : null) as RequestMap[K]['result'];
+      }
+      case 'pickDataFile':
+        return (await pickDataFile()) as RequestMap[K]['result'];
+      case 'pickSchema':
+        return (await pickTextFile('.json,.yaml,.yml,application/json')) as RequestMap[K]['result'];
+      case 'openExternal':
+        openWebLink((params as RequestMap['openExternal']['params']).url);
+        return undefined as RequestMap[K]['result'];
       case 'reveal':
       case 'notify':
         return undefined as RequestMap[K]['result'];
       default:
-        throw new Error('This needs the StructLens VS Code extension or CLI (`npx structlens`).');
+        throw new Error('This needs the StructLens VS Code extension or CLI.');
     }
   }
 
@@ -79,7 +100,7 @@ export class BrowserHost extends BaseHost {
       ...p,
       settings: this.settings(),
       host: 'browser',
-      capabilities: { reveal: false, code: false, repo: false, settings: true },
+      capabilities: { reveal: false, code: false, repo: false, settings: true, edit: true },
       version: VERSION,
     };
   }

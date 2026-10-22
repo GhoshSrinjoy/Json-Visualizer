@@ -196,11 +196,14 @@ export function sheetsToValue(sheets: XlsxSheet[]): Record<string, unknown> {
       out[s.name] = rows;
       continue;
     }
-    const width = Math.max(...rows.map((r) => r.length));
+    // A loop, not Math.max(...rows): spreading 150k+ rows overflows the call stack.
+    let width = 0;
+    for (const r of rows) if (r.length > width) width = r.length;
     const seen = new Map<string, number>();
     const header = Array.from({ length: width }, (_, i) => {
       const raw = rows[0][i];
-      let key = raw === null || raw === '' ? `column_${i + 1}` : String(raw).trim();
+      // Rows can be wider than the header row: name those columns too.
+      let key = raw === null || raw === undefined || raw === '' ? `column_${i + 1}` : String(raw).trim();
       const n = (seen.get(key) ?? 0) + 1;
       seen.set(key, n);
       if (n > 1) key = `${key}_${n}`;

@@ -1,23 +1,21 @@
 /**
- * AI integrations inside VS Code:
+ * AI integrations inside VS Code (extension.ts registers them at activation;
+ * this module runs on first use):
  *  - Language Model Tools, so Copilot agent mode can call StructLens directly
  *  - an optional MCP server definition for VS Code's own MCP support
- *  - a localhost bridge so external agents (Claude Code, Codex…) can open views here
+ *  - views opened by external agents (Claude Code, Codex…) through the localhost bridge
  *  - "Connect AI Agents…": writes MCP configs for other clients
  */
 
-import { spawnSync } from 'node:child_process';
 import * as vscode from 'vscode';
 import { CLIENTS, setupClient, type ClientId, type LaunchCommand } from '../cli/setup';
 import { TOOLS, toolErrorMessage, type ToolContext } from '../mcp/tools';
-import { startBridge, type OpenRequest } from '../node/bridge';
-import { which } from '../node/exec';
+import type { OpenRequest } from '../node/bridge';
+import { findNode } from '../node/exec';
 import { VERSION } from '../shared/version';
 import { cfg } from './config';
 import { VisualizerPanel } from './panel';
 import type { Services } from './services';
-
-export const TOOL_PREFIX = 'structlens_';
 
 function toolContext(services: Services): ToolContext {
   return {
@@ -33,84 +31,48 @@ function primaryFolder(): vscode.Uri | undefined {
   return (active && vscode.workspace.getWorkspaceFolder(active)?.uri) ?? vscode.workspace.workspaceFolders?.[0]?.uri;
 }
 
-export function registerLanguageModelTools(services: Services): vscode.Disposable[] {
-  if (!vscode.lm?.registerTool || !cfg().get<boolean>('ai.copilotTools', true)) return [];
-  const ctx = toolContext(services);
-  return TOOLS.map((tool) =>
-    vscode.lm.registerTool<Record<string, unknown>>(`${TOOL_PREFIX}${tool.name}`, {
-      prepareInvocation: () => ({ invocationMessage: `StructLens: ${tool.title.toLowerCase()}…` }),
-      async invoke(options) {
-        const folder = primaryFolder();
-        if (!folder) throw new Error('Open a folder or workspace to use StructLens tools.');
-        try {
-          const text = await tool.run(services.workspaceFor(folder), options.input ?? {}, ctx);
-          return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text.length > 60_000 ? `${text.slice(0, 60_000)}\n… (truncated)` : text)]);
-        } catch (e) {
-          // Errors are returned as text so the model can correct its arguments.
-          return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(toolErrorMessage(e))]);
-        }
-      },
-    }),
-  );
+/** Runs a StructLens tool for Copilot (`name` without the `structlens_` prefix). */
+export async function invokeTool(services: Services, name: string, input: Record<string, unknown>): Promise<vscode.LanguageModelToolResult> {
+  const tool = TOOLS.find((t) => t.name === name);
+  if (!tool) throw new Error(`Unknown StructLens tool: ${name}`);
+  const folder = primaryFolder();
+  if (!folder) throw new Error('Open a folder or workspace to use StructLens tools.');
+  try {
+    const text = await tool.run(services.workspaceFor(folder), input, toolContext(services));
+    return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text.length > 60_000 ? `${text.slice(0, 60_000)}\n… (truncated)` : text)]);
+  } catch (e) {
+    // Errors are returned as text so the model can correct its arguments.
+    return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(toolErrorMessage(e))]);
+  }
 }
 
 /** How VS Code itself (or another agent) can launch the bundled MCP server. */
 export async function launchCommand(services: Services, preferNode = true): Promise<LaunchCommand> {
   const cli = await services.stableServer();
-  // Absolute PATH entries only: never a `node` planted in an (untrusted) workspace folder.
-  const node = preferNode ? which(process.platform === 'win32' ? 'node.exe' : 'node') : undefined;
-  if (node) {
-    const r = spawnSync(node, ['--version'], { encoding: 'utf8', timeout: 4000 });
-    const major = Number(/v(\d+)/.exec(r.stdout ?? '')?.[1] ?? 0);
-    if (r.status === 0 && major >= 18) return { command: 'node', args: [cli, 'mcp'] };
-  }
+  // The absolute path: AI apps started from the dock or start menu don't get the shell's PATH.
+  // (Absolute PATH entries only: never a `node` planted in an untrusted workspace folder.)
+  const node = preferNode ? findNode(18) : undefined;
+  if (node) return { command: node, args: [cli, 'mcp'] };
   // No suitable Node on PATH: run the script with VS Code's own runtime.
   return { command: process.execPath, args: [cli, 'mcp'], env: { ELECTRON_RUN_AS_NODE: '1' } };
 }
 
-export function registerMcpProvider(services: Services): vscode.Disposable | undefined {
-  const lm = vscode.lm as typeof vscode.lm & { registerMcpServerDefinitionProvider?: typeof vscode.lm.registerMcpServerDefinitionProvider };
-  if (!lm?.registerMcpServerDefinitionProvider) return undefined;
-  const changed = new vscode.EventEmitter<void>();
-  const provider: vscode.McpServerDefinitionProvider = {
-    onDidChangeMcpServerDefinitions: changed.event,
-    provideMcpServerDefinitions: async () => {
-      if (!cfg().get<boolean>('ai.mcpServer', false)) return [];
-      const launch = await launchCommand(services, false);
-      const roots = services.allRoots();
-      return [new vscode.McpStdioServerDefinition('StructLens', launch.command, [...launch.args, ...roots.flatMap((r) => ['--root', r])], launch.env ?? {}, VERSION)];
-    },
-  };
-  const reg = lm.registerMcpServerDefinitionProvider('structlens.mcp', provider);
-  const watch = vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('structlens.ai.mcpServer') && changed.fire());
-  const folders = vscode.workspace.onDidChangeWorkspaceFolders(() => changed.fire());
-  return vscode.Disposable.from(reg, watch, folders, changed);
+/** The server for VS Code's own MCP support (setting structlens.ai.mcpServer). */
+export async function mcpServerDefinitions(services: Services): Promise<vscode.McpServerDefinition[]> {
+  const launch = await launchCommand(services, false);
+  const roots = services.allRoots();
+  return [new vscode.McpStdioServerDefinition('StructLens', launch.command, [...launch.args, ...roots.flatMap((r) => ['--root', r])], launch.env ?? {}, VERSION)];
 }
 
-export async function startAgentBridge(services: Services): Promise<vscode.Disposable | undefined> {
-  if (!cfg().get<boolean>('ai.bridge', true)) return undefined;
-  try {
-    const bridge = await startBridge({
-      roots: () => services.allRoots(),
-      version: VERSION,
-      app: vscode.env.appName,
-      onOpen: async (req: OpenRequest) => {
-        const uri = vscode.Uri.file(req.path);
-        if (req.view === 'editor') {
-          await services.reveal(uri, { uri: uri.toString(), line: req.line ?? 0, focus: true });
-          return 'Revealed in the editor.';
-        }
-        await VisualizerPanel.open(services, uri, { view: req.view as never, symbol: req.symbol, line: req.line });
-        return `Opened ${vscode.workspace.asRelativePath(uri)} in StructLens inside ${vscode.env.appName}.`;
-      },
-    });
-    const folders = vscode.workspace.onDidChangeWorkspaceFolders(() => bridge.refresh());
-    services.log('Agent bridge ready: external AI agents can open StructLens views in this window.');
-    return { dispose: () => (folders.dispose(), bridge.dispose()) };
-  } catch (e) {
-    services.log(`Agent bridge unavailable: ${(e as Error).message}`);
-    return undefined;
+/** Handles an external agent's request (through the bridge) to show something in this window. */
+export async function openFromAgent(services: Services, req: OpenRequest): Promise<string> {
+  const uri = vscode.Uri.file(req.path);
+  if (req.view === 'editor') {
+    await services.reveal(uri, { uri: uri.toString(), line: req.line ?? 0, focus: true });
+    return 'Revealed in the editor.';
   }
+  await VisualizerPanel.open(services, uri, { view: req.view as never, symbol: req.symbol, line: req.line });
+  return `Opened ${vscode.workspace.asRelativePath(uri)} in StructLens inside ${vscode.env.appName}.`;
 }
 
 interface ClientPick extends vscode.QuickPickItem {

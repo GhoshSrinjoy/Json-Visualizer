@@ -90,6 +90,9 @@ export interface AppState {
   status: string;
   /** Commands the active view supports (see commands.ts). */
   commands: string[];
+  shortcutsOpen: boolean;
+  /** Schema validation errors in the open data document (null: not validated). */
+  validationErrors: number | null;
   search: SearchState;
 }
 
@@ -97,7 +100,14 @@ export interface SearchState {
   query: string;
   /** JSONPath mode for data documents. */
   path: boolean;
+  /** Text search options (data documents). */
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  regex: boolean;
+  scope: 'all' | 'keys' | 'values';
   total: number;
+  /** More hits exist than were collected. */
+  truncated: boolean;
   index: number;
   busy: boolean;
   error?: string;
@@ -119,7 +129,9 @@ export const app = createStore<AppState>({
   crumb: '',
   status: '',
   commands: [],
-  search: { query: '', path: false, total: 0, index: -1, busy: false },
+  shortcutsOpen: false,
+  validationErrors: null,
+  search: { query: '', path: false, caseSensitive: false, wholeWord: false, regex: false, scope: 'all', total: 0, truncated: false, index: -1, busy: false },
 });
 
 export function setSearch(patch: Partial<SearchState>): void {
