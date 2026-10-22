@@ -1,6 +1,6 @@
 /** Ruby. */
 
-import { IRConverter, type Stmt, type SwitchShape } from '../ir';
+import { alwaysTrue, IRConverter, type Stmt, type SwitchShape } from '../ir';
 import type { CodeSymbol, ImportRef, SymbolKind } from '../model';
 import { paramNames, type LanguageSpec, type OutlineParts, type SymbolBuilder } from '../spec';
 import { clean, docComment, field, fields, firstLine, headerText, isComment, named, paramsText, statements, walk } from '../syntax';
@@ -263,10 +263,12 @@ function modifierLoop(node: SyntaxNode, conv: IRConverter): Stmt {
   const cond = field(node, 'condition');
   const body = field(node, 'body');
   const c = clean(cond?.text ?? '');
+  // `x while true` only exits through break.
+  const forever = node.type === 'while_modifier' && !!cond && alwaysTrue(cond);
   return {
     k: 'loop',
     node,
-    loop: body?.type === 'begin' ? 'doWhile' : 'while',
+    loop: forever ? 'infinite' : body?.type === 'begin' ? 'doWhile' : 'while',
     header: `while ${node.type === 'until_modifier' ? `not (${c})` : c}`,
     headerNode: cond,
     body: conv.stmts(body),
@@ -391,9 +393,14 @@ export const ruby: LanguageSpec = {
   functionBody: (fn) => field(fn, 'body'),
   params: (fn) => paramNames(field(fn, 'parameters')),
   functionTypes: ['method', 'singleton_method', 'class', 'module', 'singleton_class', 'lambda'],
-  decisionTypes: [
-    'if', 'elsif', 'unless', 'while', 'until', 'for', 'when', 'in_clause', 'rescue', 'conditional', ...MODIFIERS,
-  ],
+  // `while`, `for` and `case` arms are counted from the flow rules.
+  decisionTypes: ['if', 'elsif', 'unless', 'until', 'rescue', 'conditional', ...MODIFIERS, 'call'],
+  decisionWeight: (n) => {
+    // Iterator blocks drawn as loops (`items.each do`); `loop do` only exits through break.
+    if (n.type === 'call') return isStatement(n) && method(n) !== 'loop' && iteratorBlock(n) ? 1 : 0;
+    const cond = n.type === 'while_modifier' ? field(n, 'condition') : null;
+    return cond && alwaysTrue(cond) ? 0 : 1;
+  },
   calls: {
     call: {
       callee: (n) => field(n, 'method'),

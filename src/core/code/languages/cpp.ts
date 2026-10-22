@@ -451,11 +451,6 @@ function preprocIf(node: SyntaxNode, conv: IRConverter): Stmt {
 }
 
 function special(node: SyntaxNode, conv: IRConverter): Stmt[] | undefined {
-  if (node.type === 'goto_statement') {
-    // The target is not modelled: the jump ends this path (it only links back to a labelled loop).
-    const label = field(node, 'label')?.text;
-    return [{ k: 'jump', node, jump: 'continue', text: `goto ${label ?? ''}`.trim(), label }];
-  }
   if (PREPROC_IFS.has(node.type)) return [preprocIf(node, conv)];
   return undefined;
 }
@@ -472,10 +467,7 @@ function makeSpec(id: string, name: string, extensions: string[]): LanguageSpec 
     functionBody: (fn) => field(fn, 'body'),
     params: paramsOf,
     functionTypes: ['function_definition', 'lambda_expression', 'class_specifier', 'struct_specifier', 'union_specifier'],
-    decisionTypes: [
-      'if_statement', 'for_statement', 'for_range_loop', 'while_statement', 'do_statement', 'case_statement', 'catch_clause',
-      'conditional_expression', ...PREPROC_IFS,
-    ],
+    decisionTypes: ['if_statement', 'catch_clause', 'conditional_expression', ...PREPROC_IFS],
     calls: {
       call_expression: { callee: (n) => field(n, 'function'), name: (n) => callee(field(n, 'function')) },
       new_expression: { callee: (n) => field(n, 'type'), name: (n) => callee(field(n, 'type')), kind: 'new' },
@@ -495,6 +487,7 @@ function makeSpec(id: string, name: string, extensions: string[]): LanguageSpec 
       throws: ['throw_statement'],
       breaks: ['break_statement'],
       continues: ['continue_statement'],
+      gotos: ['goto_statement'],
       labeled: ['labeled_statement'],
       definitions: ['function_definition', 'class_specifier', 'struct_specifier', 'union_specifier', 'enum_specifier'],
       fallthrough: true,

@@ -33,6 +33,12 @@ export interface CallGraphOptions {
   direction?: 'callees' | 'callers' | 'both';
   /** Cap on nodes (largest fan-in/out kept). */
   maxNodes?: number;
+  /**
+   * Most files analysed. A caller that stops collecting files at the limit passes one file
+   * more when there are more (the workspace does): that file is left out and the result is
+   * marked `truncated`.
+   */
+  maxFiles?: number;
 }
 
 interface Entry {
@@ -40,15 +46,32 @@ interface Entry {
   sym: CodeSymbol;
   file: string;
   container?: CodeSymbol;
+  /** The language lets methods call each other without `this.` (bare `foo()` may be a method). */
+  implicitThis: boolean;
 }
 
 const SELF = new Set(['this', 'self', '$this', 'cls', 'base', 'super', 'Self', 'static']);
+
+/**
+ * Languages where a bare `foo()` inside a class can call one of its methods. Python, JS/TS, Go,
+ * Rust and PHP need `self.` / `this.` / `$this->` / a receiver, so there a bare name is a function.
+ */
+const IMPLICIT_THIS = new Set(['java', 'csharp', 'cpp', 'ruby', 'kotlin', 'swift', 'scala', 'dart', 'groovy']);
+
+/** Module name of a file: `models` for `app/models.py`, `app` for `app/__init__.py` or `app/index.ts`. */
+function moduleName(path: string): string {
+  const parts = path.split('/');
+  const stem = parts[parts.length - 1].replace(/\.[^.]*$/, '');
+  return /^(__init__|index|mod)$/.test(stem) && parts.length > 1 ? parts[parts.length - 2] : stem;
+}
 
 export function callGraphNodeId(path: string, symbolId: string): string {
   return `${path}#${symbolId}`;
 }
 
-export function buildCallGraph(files: CallGraphFile[], imports?: ImportTargets, options: CallGraphOptions = {}): CallGraph {
+export function buildCallGraph(all: CallGraphFile[], imports?: ImportTargets, options: CallGraphOptions = {}): CallGraph {
+  const truncated = options.maxFiles !== undefined && all.length > options.maxFiles;
+  const files = truncated ? all.slice(0, options.maxFiles) : all;
   const entries: Entry[] = [];
   const byName = new Map<string, Entry[]>();
   const byFileName = new Map<string, Map<string, Entry[]>>();
@@ -58,13 +81,15 @@ export function buildCallGraph(files: CallGraphFile[], imports?: ImportTargets, 
   for (const f of files) {
     const fileMap = new Map<string, Entry[]>();
     byFileName.set(f.path, fileMap);
+    const implicitThis = IMPLICIT_THIS.has(f.outline.language);
     for (const s of flattenSymbols(f.outline.symbols)) for (const c of s.children ?? []) parentOf.set(c, s);
     for (const s of flattenSymbols(f.outline.symbols)) {
       const isCallable = CALLABLE_KINDS.has(s.kind);
       const isClass = s.kind === 'class' || s.kind === 'struct';
       if (!isCallable && !isClass) continue;
       const parent = parentOf.get(s);
-      const e: Entry = { id: callGraphNodeId(f.path, s.id), sym: s, file: f.path, container: parent && CONTAINER_KINDS.has(parent.kind) ? parent : undefined };
+      const container = parent && CONTAINER_KINDS.has(parent.kind) ? parent : undefined;
+      const e: Entry = { id: callGraphNodeId(f.path, s.id), sym: s, file: f.path, container, implicitThis };
       entries.push(e);
       push(byName, s.name, e);
       push(fileMap, s.name, e);
@@ -74,17 +99,23 @@ export function buildCallGraph(files: CallGraphFile[], imports?: ImportTargets, 
   const entryById = new Map(entries.map((e) => [e.id, e]));
   const importedFiles = (path: string): Set<string> => new Set((imports?.get(path) ?? []).flatMap((i) => i.files));
   const outlineOf = new Map(files.map((f) => [f.path, f.outline]));
+  /** Every file an import line resolves to (`from pkg import a, b` reaches the package and its modules). */
+  const lineFiles = (path: string, line: number): string[] => [
+    ...new Set((imports?.get(path) ?? []).filter((i) => i.line === line).flatMap((i) => i.files)),
+  ];
 
-  /** Files bound to an import alias such as `fs`, `np`, `util`. */
+  /** Files bound to an import alias such as `fs`, `np`, `util`, or a module from `from pkg import mod`. */
   const aliasFiles = (path: string, alias: string): string[] | undefined => {
     const o = outlineOf.get(path);
     if (!o) return undefined;
     for (const imp of o.imports) {
       const last = imp.source.split(/[/.\\:]/).filter(Boolean).pop();
-      const bound = imp.names.some((n) => (n.alias ?? (n.name === '*' || n.name === 'default' ? undefined : n.name)) === alias) || (last === alias && imp.names.every((n) => !n.alias));
-      if (!bound) continue;
-      const hit = imports?.get(path)?.find((i) => i.line === imp.line);
-      return hit?.files ?? [];
+      const named = imp.names.find((n) => (n.alias ?? (n.name === '*' || n.name === 'default' ? undefined : n.name)) === alias);
+      if (!named && !(last === alias && imp.names.every((n) => !n.alias))) continue;
+      const found = lineFiles(path, imp.line);
+      // `from app import models`: the name is the module `app/models.py`, not the package.
+      const module = named ? found.filter((f) => moduleName(f) === named.name.split('.').pop()) : [];
+      return module.length ? module : found;
     }
     return undefined;
   };
@@ -93,15 +124,13 @@ export function buildCallGraph(files: CallGraphFile[], imports?: ImportTargets, 
   const bindingFiles = (path: string, name: string): { files: string[]; original: string; star: boolean } | undefined => {
     const o = outlineOf.get(path);
     if (!o) return undefined;
-    const targets = imports?.get(path) ?? [];
     for (const imp of o.imports) {
       const n = imp.names.find((x) => (x.alias ?? x.name) === name && x.name !== '*');
       if (!n) continue;
-      const files = targets.find((t) => t.line === imp.line)?.files ?? [];
-      return { files, original: n.name === 'default' ? name : n.name, star: false };
+      return { files: lineFiles(path, imp.line), original: n.name === 'default' ? name : n.name, star: false };
     }
     const star = o.imports.filter((imp) => imp.names.some((x) => x.name === '*' && !x.alias));
-    const files = star.flatMap((imp) => targets.find((t) => t.line === imp.line)?.files ?? []);
+    const files = star.flatMap((imp) => lineFiles(path, imp.line));
     return files.length ? { files, original: name, star: true } : undefined;
   };
 
@@ -138,7 +167,7 @@ export function buildCallGraph(files: CallGraphFile[], imports?: ImportTargets, 
       // Nested function, same class (implicit this), same file, imports, global.
       const nested = (from.sym.children ?? []).filter((c) => c.name === name && CALLABLE_KINDS.has(c.kind));
       if (nested.length) return { targets: nested.map((c) => entryById.get(callGraphNodeId(from.file, c.id))!).filter(Boolean), confidence: 'exact' };
-      if (from.container) {
+      if (from.container && from.implicitThis) {
         const own = methodsOf(from.container, name, from.file);
         if (own.length) return { targets: own, confidence: 'exact' };
       }
@@ -224,7 +253,9 @@ export function buildCallGraph(files: CallGraphFile[], imports?: ImportTargets, 
     const keep = new Set(nodes.map((n) => n.id));
     edgeList = edgeList.filter((e) => keep.has(e.from) && keep.has(e.to));
   }
-  return { nodes, edges: edgeList, files: files.map((f) => f.path) };
+  const graph: CallGraph = { nodes, edges: edgeList, files: files.map((f) => f.path) };
+  if (truncated) graph.truncated = true;
+  return graph;
 }
 
 function scoped(candidates: Entry[], file: string, imported: Set<string>): { targets: Entry[]; confidence: CallGraphEdge['confidence'] } {

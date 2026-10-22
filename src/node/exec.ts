@@ -48,6 +48,18 @@ export function resolveCommand(command: string, args: string[]): Resolved | unde
   return { file, args, windowsVerbatimArguments: false };
 }
 
+/**
+ * Absolute path of a Node.js (at least `minMajor`) found on PATH. Configs for AI clients need the
+ * absolute path: apps started from the dock or start menu don't get the shell's PATH.
+ */
+export function findNode(minMajor = 18): string | undefined {
+  const node = which(process.platform === 'win32' ? 'node.exe' : 'node');
+  if (!node) return undefined;
+  const r = spawnSync(node, ['--version'], { encoding: 'utf8', timeout: 4000, windowsHide: true });
+  const major = Number(/^v(\d+)/.exec(r.stdout?.trim() ?? '')?.[1] ?? 0);
+  return r.status === 0 && major >= minMajor ? node : undefined;
+}
+
 export function runSync(command: string, args: string[], options: SpawnSyncOptions = {}): SpawnSyncReturns<string> | undefined {
   const r = resolveCommand(command, args);
   if (!r) return undefined;

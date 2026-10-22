@@ -55,7 +55,8 @@ describe('Rust outline', () => {
     expect(load.signature).toBe('(path: &str, limit: usize) -> Result<Vec<User>, String>');
     expect(load.params).toEqual(['path', 'limit']);
     expect(load.modifiers).toEqual(['pub']);
-    expect(load.complexity).toBe(13);
+    // 1 `?` + 6 ifs + for + while (not `loop`) + 2 match arms (not `_`), + 1.
+    expect(load.complexity).toBe(12);
     expect(load.calls!.find((c) => c.name === 'vec')).toMatchObject({ kind: 'macro' });
     expect(load.calls!.find((c) => c.name === 'push')).toMatchObject({ receiver: 'result' });
     expect(load.calls!.filter((c) => c.name === 'new').map((c) => c.receiver)).toEqual(['Vec', 'User']);
@@ -75,7 +76,8 @@ describe('Rust flow', () => {
     const r = await analyze('load_users');
     const n = r.flow.nodes;
     expect(n.filter((x) => x.kind === 'decision').map((x) => x.label)).toEqual([
-      'data.is_empty()', 'data.len() > 1000', "line.starts_with('#')", 'result.len() >= limit', 'n == 0',
+      'fs::read_to_string(path).map_err(|e| e.to_string(…', 'data.is_empty()', 'data.len() > 1000', "line.starts_with('#')",
+      'result.len() >= limit', 'n == 0', 'n > 0',
     ]);
     const [forLoop, whileLoop, infinite] = n.filter((x) => x.kind === 'loop');
     expect([forLoop.label, whileLoop.label, infinite.label]).toEqual(['for (i, line) in data.lines().enumerate()', 'while n < 3', 'loop']);
@@ -91,11 +93,13 @@ describe('Rust flow', () => {
     const breaks = n.filter((x) => x.label === 'break');
     expect(r.flow.edges).toContainEqual({ from: breaks[1].id, to: sw.id, kind: 'break', label: undefined });
 
-    // The final expression without `;` is the return value; expression-level `if` stays a statement.
+    // The final expression without `;` is the return value; a `let` initializer's `if` branches
+    // into the binding.
     expect(returns(r)).toEqual(['return Err("empty".into())', 'return Ok(vec![])', 'return Ok(result)']);
-    expect(n.find((x) => x.lines?.includes('let total = if n > 0 { n } else { 0 };'))).toBeTruthy();
+    const total = nodeWith(r, 'let total = …');
+    expect(r.flow.edges.filter((e) => e.to === total.id).map((e) => n[e.from].label)).toEqual(['n', '0']);
     expect(n.some((x) => x.unreachable)).toBe(false);
-    expect(r.flow.complexity).toBe(10);
+    expect(r.flow.complexity).toBe(12);
     expect(returns(await analyze('User@17.greet'))).toEqual(['return format!("hi {}", self.name)']);
   });
 

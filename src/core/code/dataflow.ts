@@ -140,6 +140,9 @@ class DataFlowBuilder {
       case 'labeled':
         this.stmts(s.body);
         return;
+      case 'check':
+        // `expr?`: the statement that follows carries the expression's flows.
+        return;
     }
   }
 

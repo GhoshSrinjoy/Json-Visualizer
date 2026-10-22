@@ -59,6 +59,101 @@ describe('extractImports', () => {
     const r = extractImports("import {\n  a,\n  b\n} from './x';\n/* import y from 'y' */\nconst z = require('z');", 'f.ts');
     expect(r.map((i) => [i.specifier, i.line])).toEqual([['./x', 0], ['z', 5]]);
   });
+
+  const specs = (text: string, path: string) => extractImports(text, path).map((i) => i.specifier);
+
+  it('reads strings, template literals and regexes before looking for comments (JS)', () => {
+    // `'lib/*.js'` and `'*/*'` used to open or close a block comment and hide the imports.
+    expect(specs("const files = glob.sync('lib/*.js');\nconst helper = require('./helper');\n/** docs */\n", 'a.js')).toEqual(['./helper']);
+    expect(specs("const h = { Accept: '*/*' };\nconst lazy = () => import('./lazy');\n/** doc */\nexport const y = 1;\n", 'a.ts')).toEqual(['./lazy']);
+    expect(specs("const q = s.replace(/'/g, ''); import z from './z';\nconst re = /\\/\\*/; import w from './w';\n", 'a.js')).toEqual(['./z', './w']);
+    expect(specs("const t = `${a}/*`; import q from './q';\nconst g = `import fake from './fake'`;\n", 'a.ts')).toEqual(['./q']);
+    expect(specs("const u = `${ require('./inner') }`;\nconst d = a / b; // import no from './no'\n", 'a.js')).toEqual(['./inner']);
+  });
+
+  it('skips docstrings and strings where imports never use them (Python, Java, C#)', () => {
+    expect(specs('"""\nExample:\n    from app import views\n"""\nx = "# no comment"\nimport os  # import sys\n', 'doc.py')).toEqual(['os']);
+    expect(specs('String t = """\nimport a.b.C;\n""";\nimport java.util.List;\n', 'A.java')).toEqual(['java.util.List']);
+    expect(specs('var p = @"C:\\dir\\"; // using No;\nusing System.Text;\n', 'A.cs')).toEqual(['System.Text']);
+  });
+
+  it('keeps string specifiers and skips comment markers inside strings (Go, C, Lua, CSS)', () => {
+    expect(specs('package main\nimport (\n\t"fmt" // fmt\n\t"example.com/x"\n)\nvar s = `/* raw`\nimport "after"\n', 'a.go').sort()).toEqual(['after', 'example.com/x', 'fmt']);
+    expect(specs('#include "a//b.h"\n/* #include "no.h" */\nchar c = \'"\';\nconst char* r = R"x(/* )x";\n#include "after.h"\n', 'a.c')).toEqual([
+      '"a//b.h"',
+      '"after.h"',
+    ]);
+    expect(specs("local s = '--'; require('y')\n--[[ require('no') ]]\nrequire 'z'\n", 'a.lua')).toEqual(['y', 'z']);
+    expect(specs("@import url(//fonts.example.com/x.css);\n// @import 'no';\n@use 'sass:math';\n", 'a.scss')).toEqual(['//fonts.example.com/x.css', 'sass:math']);
+  });
+
+  it('reads Rust chars, lifetimes, raw strings and nested comments, and local module paths', () => {
+    const src = "fn f<'a>(x: &'a str) -> char { 'x' }\nlet s = r#\"/* \"#;\nmod config;\n/* /* nested */ mod no; */\nuse config::Settings;\nmod inline { }\nuse inline::Thing;\nuse serde::Deserialize;\n";
+    expect(specs(src, 'src/main.rs')).toEqual(['config', 'self::config::Settings', 'serde::Deserialize']);
+  });
+
+  it('ignores trait `use` in class bodies and inline HTML (PHP)', () => {
+    const src = "<?php\nnamespace App;\nuse App\\Concerns\\HasName;\n# use No\\Thing;\n#[Attr]\nclass User {\n    use HasName;\n    use A, B { A::x insteadof B; }\n}\n?>\n<p>Don't</p>\n<?php require 'footer.php'; ?>\n";
+    expect(specs(src, 'src/User.php')).toEqual(['App\\Concerns\\HasName', 'footer.php']);
+    expect(specs('<?php\nnamespace App {\n    use App\\Models\\User;\n    class A { use T; }\n}\n', 'b.php')).toEqual(['App\\Models\\User']);
+  });
+});
+
+describe('buildDependencyGraph: packages, strings and local modules', () => {
+  let dir = '';
+  let g: DepGraph;
+  const BS = '\\';
+  const sources: Record<string, string> = {
+    'py/app/__init__.py': '',
+    'py/app/models.py': 'def save(x):\n    return x\n',
+    'py/app/views.py': 'def render():\n    pass\n',
+    'py/main.py': 'from app import models, views\n',
+    'py/doc.py': '"""\nExample:\n    from app import views\n"""\nx = 1\n',
+    'py/app/sub.py': 'from . import models\n',
+    'js/a.js': "const files = glob.sync('lib/*.js');\nconst helper = require('./helper');\n",
+    'js/helper.js': 'module.exports = 1;\n',
+    'js/accept.ts': "const h = { Accept: '*/*' };\nconst lazy = () => import('./lazy');\n",
+    'js/lazy.ts': 'export default 1;\n',
+    'rs/Cargo.toml': '[package]\nname = "x"\n',
+    'rs/src/main.rs': 'mod config;\nuse config::Settings;\nfn main() {}\n',
+    'rs/src/config.rs': 'pub struct Settings;\n',
+    'php/composer.json': JSON.stringify({ autoload: { 'psr-4': { [`App${BS}`]: 'src/' } } }),
+    'php/src/User.php': `<?php\nnamespace App;\nuse App${BS}Concerns${BS}HasName;\nclass User {\n    use HasName;\n}\n`,
+    'php/src/Concerns/HasName.php': `<?php\nnamespace App${BS}Concerns;\ntrait HasName {}\n`,
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'structlens-deps2-'));
+    for (const [rel, content] of Object.entries(sources)) {
+      const p = join(dir, rel);
+      mkdirSync(join(p, '..'), { recursive: true });
+      writeFileSync(p, content);
+    }
+    g = await buildDependencyGraph(await scanRepo(dir, nodeFs), nodeFs);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  const out = (from: string) => {
+    const f = g.nodes.find((n) => n.path === from);
+    return f ? g.edges.filter((e) => e.from === f.id).map((e) => `${g.nodes[e.to].kind}:${g.nodes[e.to].path}`).sort() : [];
+  };
+
+  it('links `from pkg import mod` to the package and to each module', () => {
+    expect(out('py/main.py')).toEqual(['file:py/app/__init__.py', 'file:py/app/models.py', 'file:py/app/views.py']);
+    expect(out('py/app/sub.py')).toEqual(['file:py/app/models.py']);
+    expect(out('py/doc.py')).toEqual([]);
+  });
+
+  it('finds imports after strings that look like comments', () => {
+    expect(out('js/a.js')).toEqual(['file:js/helper.js']);
+    expect(out('js/accept.ts')).toEqual(['file:js/lazy.ts']);
+  });
+
+  it('resolves `use` of a declared module, and drops trait `use` in a class', () => {
+    expect(out('rs/src/main.rs')).toEqual(['file:rs/src/config.rs']);
+    expect(out('php/src/User.php')).toEqual(['file:php/src/Concerns/HasName.php']);
+    expect(g.nodes.some((n) => n.path === 'config' || n.path === 'HasName')).toBe(false);
+  });
 });
 
 describe('buildDependencyGraph', () => {

@@ -39,7 +39,7 @@ export const F_ELEMENT = 32;
 export const F_SYNTHETIC = 64;
 /** Produced by error recovery. */
 export const F_ERROR = 128;
-/** YAML alias (`*anchor`). */
+/** YAML alias left unexpanded (circular, unknown anchor or expansion cap): a `*anchor` string. */
 export const F_ALIAS = 256;
 /** `keyPos` is an index into `tree.columns` (CSV header). */
 export const F_COLUMN_KEY = 512;
@@ -47,6 +47,8 @@ export const F_COLUMN_KEY = 512;
 export const F_NO_POS = 1024;
 /** XML CDATA section. */
 export const F_CDATA = 2048;
+/** Copied from a YAML anchor by an alias or merge key; positions point at the anchor. */
+export const F_COPY = 4096;
 
 export type DataFormat =
   | 'json'
@@ -70,6 +72,8 @@ export interface ParseIssue {
   message: string;
   line: number;
   col: number;
+  /** Absent means 'error'; warnings flag input that was read fine but is not valid in the format. */
+  severity?: 'error' | 'warning';
 }
 
 export type PathSegment = string | number;
@@ -77,10 +81,17 @@ export type Primitive = string | number | boolean | null;
 
 /** Nesting beyond this is summarised by toJS (keeps recursion bounded). */
 const MAX_JS_DEPTH = 1000;
+/** V8's string length limit: no JSON text can be longer. */
+const MAX_STRING = 2 ** 29 - 24;
 
 /** Formats whose text is JSON-like (Excel workbooks are converted to JSON). */
 const JSON_FAMILY = new Set<DataFormat>(['json', 'jsonc', 'json5', 'jsonl', 'xlsx']);
 const XML_FAMILY = new Set<DataFormat>(['xml', 'html']);
+/** Formats whose parsers assign ids in source order (TOML and YAML aliases do not). */
+const SOURCE_ORDERED = new Set<DataFormat>(['json', 'jsonc', 'json5', 'jsonl', 'xlsx', 'xml', 'html', 'csv', 'tsv', 'ini', 'env', 'properties']);
+
+const CONTROL_CHAR = /[\u0000-\u001f]/;
+const NEEDS_ESCAPE = /[\\\u0000-\u001f]/;
 
 export class DataTree {
   count = 0;
@@ -104,6 +115,10 @@ export class DataTree {
   maxDepth = 0;
   parseMs = 0;
   private lineStarts: Uint32Array | undefined;
+  /** Positioned node ids sorted by start, when ids are not in source order (null when they are). */
+  private byStart: Uint32Array | null | undefined;
+  /** JSON string literals of `columns`, built on first use. */
+  private columnsJSON: string[] | undefined;
   private readonly jsonLike: boolean;
   readonly xmlLike: boolean;
 
@@ -246,8 +261,8 @@ export class DataTree {
         return this.stringValue(id);
       case T_NUMBER: {
         const raw = this.rawValue(id);
-        const n = Number(raw.replace(/_/g, ''));
-        return Number.isNaN(n) && !/nan/i.test(raw) ? raw : n;
+        const n = parseNumber(raw);
+        return Number.isNaN(n) && !NAN_LITERAL.test(raw.trim()) ? raw : n;
       }
       case T_BOOLEAN:
         return /^(true|yes|on)$/i.test(this.rawValue(id));
@@ -268,7 +283,7 @@ export class DataTree {
       case T_STRING:
         return oneLine(this.stringValue(id), max);
       case T_NULL:
-        return this.flags[id] & F_ALIAS ? this.rawValue(id) : 'null';
+        return 'null';
       default:
         return oneLine(this.rawValue(id), max);
     }
@@ -336,8 +351,19 @@ export class DataTree {
     return this.valEnd[id];
   }
 
-  /** Deepest node whose source range contains `offset` (or -1). */
+  /** Deepest node whose source range contains `offset` (the root when none does). */
   nodeAtOffset(offset: number): number {
+    const byStart = this.positionIndex();
+    const best = byStart ? this.lastStartingIn(byStart, offset) : this.lastStarting(offset);
+    for (let id = best; id >= 0; id = this.parent[id]) {
+      if (this.flags[id] & (F_SYNTHETIC | F_NO_POS)) continue;
+      if (this.start(id) <= offset && offset < Math.max(this.end(id), this.start(id) + 1)) return id;
+    }
+    return this.root;
+  }
+
+  /** The last node, by id, that starts at or before `offset`; ids must be in source order. */
+  private lastStarting(offset: number): number {
     let lo = 0;
     let hi = this.count - 1;
     let best = -1;
@@ -362,11 +388,54 @@ export class DataTree {
         lo = mid + 1;
       } else hi = mid - 1;
     }
-    for (let id = best; id >= 0; id = this.parent[id]) {
-      if (this.flags[id] & (F_SYNTHETIC | F_NO_POS)) continue;
-      if (this.start(id) <= offset && offset < Math.max(this.end(id), this.start(id) + 1)) return id;
+    return best;
+  }
+
+  /**
+   * Ids are in source order for most formats, so nodeAtOffset can binary-search
+   * them directly. TOML (tables can be reopened after other tables) and YAML
+   * aliases (copies point back at their anchor) break that order; for those an
+   * index of positioned, non-copied nodes sorted by start is built once.
+   */
+  private positionIndex(): Uint32Array | null {
+    if (this.byStart !== undefined) return this.byStart;
+    let ordered = true;
+    if (!SOURCE_ORDERED.has(this.format)) {
+      for (let id = 0, prev = 0; id < this.count; id++) {
+        const f = this.flags[id];
+        if (f & (F_NO_POS | F_SYNTHETIC)) continue;
+        const s = this.start(id);
+        if (f & F_COPY || s < prev) {
+          ordered = false;
+          break;
+        }
+        prev = s;
+      }
     }
-    return this.root;
+    if (ordered) return (this.byStart = null);
+    const ids: number[] = [];
+    const starts = new Uint32Array(this.count);
+    for (let id = 0; id < this.count; id++) {
+      if (this.flags[id] & (F_NO_POS | F_SYNTHETIC | F_COPY)) continue;
+      ids.push(id);
+      starts[id] = this.start(id);
+    }
+    // Ties keep id order, so the deepest of several nodes starting together wins.
+    ids.sort((a, b) => starts[a] - starts[b] || a - b);
+    return (this.byStart = Uint32Array.from(ids));
+  }
+
+  /** The last node of `byStart` that starts at or before `offset` (-1 when none does). */
+  private lastStartingIn(byStart: Uint32Array, offset: number): number {
+    let best = -1;
+    for (let lo = 0, hi = byStart.length - 1; lo <= hi; ) {
+      const mid = (lo + hi) >>> 1;
+      if (this.start(byStart[mid]) <= offset) {
+        best = byStart[mid];
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    return best;
   }
 
   /** Zero-based line/column of a source offset. */
@@ -407,8 +476,9 @@ export class DataTree {
   // ---------------------------------------------------------------- materialisation
 
   /**
-   * Materialises a subtree as plain JS. `budget` caps the number of nodes
-   * visited; containers past the budget are replaced by a summary string.
+   * Materialises a subtree as plain JS for display. `budget` caps the number of
+   * nodes visited; containers past the budget are replaced by a summary string,
+   * so exports and copies must use toJSON / jsonText instead.
    */
   toJS(id = this.root, budget = 200_000): unknown {
     const state = { left: budget, depth: 0 };
@@ -454,23 +524,180 @@ export class DataTree {
       if (this.xmlLike && Object.prototype.hasOwnProperty.call(obj, k)) {
         const prev = obj[k];
         obj[k] = Array.isArray(prev) && (prev as { __multi?: boolean }).__multi ? (prev.push(v), prev) : markMulti([prev, v]);
+      } else if (k === '__proto__') {
+        // Assignment would set the prototype instead of adding the key.
+        Object.defineProperty(obj, k, { value: v, enumerable: true, writable: true, configurable: true });
       } else obj[k] = v;
     }
     return obj;
   }
 
   /**
-   * JSON text for a subtree. For strict JSON sources the original text is
-   * reused verbatim (so big numbers keep their precision).
+   * Complete JSON text of a subtree (see jsonText). Throws when it would be
+   * longer than `maxChars`, so a copy or export is never silently cut short.
    */
   toJSON(id = this.root, indent: number | undefined = 2, maxChars = Infinity): string {
-    let s: string;
-    if (this.format === 'json' && !this.errors.length && !(this.flags[id] & F_SYNTHETIC) && indent === undefined) {
-      s = this.text.slice(this.valPos[id], this.valEnd[id]);
-    } else {
-      s = JSON.stringify(this.toJS(id), null, indent) ?? 'null';
+    const { text, truncated } = this.jsonText(id, indent, maxChars);
+    if (truncated) {
+      const what = id === this.root ? 'The document' : this.pathString(id);
+      throw new Error(`${what} is larger than ${charsLabel(Math.min(maxChars, MAX_STRING))} as JSON; select a smaller part to copy or export.`);
     }
-    return s.length > maxChars ? s.slice(0, maxChars) + '\n…(truncated)' : s;
+    return text;
+  }
+
+  /**
+   * JSON text of a subtree, written straight from the columns: no intermediate
+   * JS values and no recursion, so documents of any size and depth convert
+   * completely. Number literals that are valid JSON are copied verbatim (big
+   * integers keep every digit); other spellings become what JSON.stringify
+   * writes for their value (`0x1F` → 31, `.5` → 0.5, NaN and Infinity → null).
+   * XML siblings that share a name are grouped into arrays, as in toJS;
+   * duplicate keys elsewhere are kept as written. `indent` works as in
+   * JSON.stringify. Writing stops once the text would exceed `maxChars`: `text`
+   * is then its first `maxChars` characters and `truncated` is true.
+   */
+  jsonText(id = this.root, indent?: number, maxChars = Infinity): { text: string; truncated: boolean } {
+    const out = new JsonWriter(Math.max(0, Math.min(maxChars, MAX_STRING)));
+    const step = indent !== undefined && indent >= 1 ? Math.min(10, Math.floor(indent)) : 0;
+    const pads: string[] = [];
+    const seps: string[] = [];
+    const indentOf = (depth: number) => (step ? '\n' + ' '.repeat(depth * step) : '');
+    const pad = (depth: number): string => (depth < 256 ? (pads[depth] ??= indentOf(depth)) : indentOf(depth));
+    const sep = (depth: number): string => (depth < 256 ? (seps[depth] ??= ',' + indentOf(depth)) : ',' + indentOf(depth));
+    const colon = step ? ': ' : ':';
+    const { type, size, childCount } = this;
+    // Open containers, innermost last. A frame walks its children by subtree
+    // size, or an explicit item list: an XML object whose children repeat a
+    // name lists name groups, and each group is written as an array of ids.
+    const ids: number[] = [];
+    const nexts: number[] = []; // next child id, or next list index
+    const ends: number[] = []; // end of the subtree, or list length
+    const lists: (number[][] | number[] | undefined)[] = [];
+    const objects: boolean[] = [];
+    let sp = 0;
+    const push = (container: number, object: boolean, list: number[][] | number[] | undefined) => {
+      ids[sp] = container;
+      nexts[sp] = list ? 0 : container + 1;
+      ends[sp] = list ? list.length : container + size[container];
+      lists[sp] = list;
+      objects[sp] = object;
+      sp++;
+    };
+    const value = (node: number) => {
+      const t = type[node];
+      if (t !== T_OBJECT && t !== T_ARRAY) out.write(this.scalarJSON(node));
+      else if (childCount[node] === 0) out.write(t === T_OBJECT ? '{}' : '[]');
+      else {
+        out.write(t === T_OBJECT ? '{' : '[');
+        push(node, t === T_OBJECT, t === T_OBJECT && this.xmlLike ? this.nameGroups(node) : undefined);
+      }
+    };
+
+    value(id);
+    while (sp > 0 && !out.full) {
+      const d = sp - 1;
+      const next = nexts[d];
+      if (next >= ends[d]) {
+        sp = d;
+        out.write(pad(d));
+        out.write(objects[d] ? '}' : ']');
+        continue;
+      }
+      const list = lists[d];
+      let child: number;
+      let group: number[] | undefined;
+      if (list === undefined) {
+        child = next;
+        nexts[d] = next + size[next];
+        out.write(next === ids[d] + 1 ? pad(sp) : sep(sp));
+      } else {
+        const item = list[next];
+        nexts[d] = next + 1;
+        out.write(next === 0 ? pad(sp) : sep(sp));
+        if (typeof item === 'number') child = item;
+        else if (item.length === 1) child = item[0];
+        else {
+          child = item[0];
+          group = item;
+        }
+      }
+      if (objects[d]) {
+        out.write(this.keyJSON(child));
+        out.write(colon);
+      }
+      if (group) {
+        out.write('[');
+        push(-1, false, group);
+      } else value(child);
+    }
+    return out.result();
+  }
+
+  /** JSON text of a primitive node. */
+  private scalarJSON(id: number): string {
+    switch (this.type[id]) {
+      case T_STRING:
+        return this.stringJSON(id);
+      case T_NUMBER: {
+        const raw = this.rawValue(id);
+        return jsonNumber(raw) ?? JSON.stringify(raw);
+      }
+      case T_BOOLEAN:
+        return this.value(id) ? 'true' : 'false';
+      default:
+        return 'null';
+    }
+  }
+
+  /** JSON string literal of a T_STRING node; JSON sources reuse their own literal when it is valid. */
+  private stringJSON(id: number): string {
+    const f = this.flags[id];
+    if (this.jsonLike && !(f & (F_VAL_SYNTH | F_ERROR))) {
+      const raw = this.text.slice(this.valPos[id], this.valEnd[id]);
+      if (raw.length >= 2 && raw.charCodeAt(0) === 34 && raw.charCodeAt(raw.length - 1) === 34) {
+        if (!(f & F_ESCAPED)) {
+          if (!CONTROL_CHAR.test(raw)) return raw;
+        } else {
+          try {
+            JSON.parse(raw);
+            return raw;
+          } catch {
+            // not strict JSON (raw control characters, `\x41`…): re-encode below
+          }
+        }
+      }
+    }
+    return JSON.stringify(this.stringValue(id));
+  }
+
+  /** JSON string literal of an object member's key. */
+  private keyJSON(id: number): string {
+    const f = this.flags[id];
+    if (this.jsonLike && !(f & F_KEY_SYNTH)) {
+      const raw = this.text.slice(this.keyPos[id], this.keyEnd[id]);
+      if (raw.length >= 2 && raw.charCodeAt(0) === 34 && raw.charCodeAt(raw.length - 1) === 34 && !NEEDS_ESCAPE.test(raw)) return raw;
+    } else if (f & F_COLUMN_KEY && !(f & F_KEY_SYNTH) && this.columns) {
+      const cached = (this.columnsJSON ??= this.columns.map((c) => JSON.stringify(c)))[this.keyPos[id]];
+      if (cached !== undefined) return cached;
+    }
+    return JSON.stringify(String(this.key(id)));
+  }
+
+  /** Children of an XML element grouped by name in first-seen order, when a name repeats (as toJS groups them). */
+  private nameGroups(id: number): number[][] | undefined {
+    const n = this.childCount[id];
+    if (n < 2) return undefined;
+    const groups = new Map<string, number[]>();
+    let repeated = false;
+    for (let c = id + 1, k = 0; k < n; k++, c += this.size[c]) {
+      const name = String(this.key(c));
+      const g = groups.get(name);
+      if (g) {
+        g.push(c);
+        repeated = true;
+      } else groups.set(name, [c]);
+    }
+    return repeated ? [...groups.values()] : undefined;
   }
 
   /** Counts per node type in the subtree of `id`. */
@@ -496,6 +723,135 @@ export class DataTree {
 function markMulti(a: unknown[]): unknown[] {
   Object.defineProperty(a, '__multi', { value: true, enumerable: false });
   return a;
+}
+
+/**
+ * Collects output in joined chunks (never one deep string rope) and stops
+ * accepting text once `max` characters have been written.
+ */
+class JsonWriter {
+  full = false;
+  private length = 0;
+  private parts: string[] = [];
+  private readonly chunks: string[] = [];
+
+  constructor(private readonly max: number) {}
+
+  write(s: string): void {
+    if (this.full) return;
+    if (this.length + s.length > this.max) {
+      this.parts.push(s.slice(0, this.max - this.length));
+      this.length = this.max;
+      this.full = true;
+      return;
+    }
+    this.length += s.length;
+    this.parts.push(s);
+    if (this.parts.length === 4096) {
+      this.chunks.push(this.parts.join(''));
+      this.parts = [];
+    }
+  }
+
+  result(): { text: string; truncated: boolean } {
+    this.chunks.push(this.parts.join(''));
+    this.parts = [];
+    return { text: this.chunks.length === 1 ? this.chunks[0] : this.chunks.join(''), truncated: this.full };
+  }
+}
+
+/** "20 MB"-style label for a character limit (one character is about one byte). */
+function charsLabel(n: number): string {
+  if (n >= 1e6) return `${Math.round(n / 1e5) / 10} MB`;
+  if (n >= 1e3) return `${Math.round(n / 1e2) / 10} KB`;
+  return `${n} characters`;
+}
+
+const NAN_LITERAL = /^[+-]?\.?nan$/i;
+const INF_LITERAL = /^\.?inf(inity)?$/i;
+/** Decimal literals JSON does not accept as written: `+1`, `.5`, `5.`, `007`, `1_000`. */
+const LOOSE_DECIMAL = /^([+-]?)(\d[\d_]*)?(?:\.(\d[\d_]*)?)?(?:[eE]([+-]?\d+))?$/;
+
+/** True when `s` is exactly one JSON number token. */
+export function isJsonNumber(s: string): boolean {
+  let i = 0;
+  let c = s.charCodeAt(0);
+  if (c === 45) c = s.charCodeAt(++i);
+  if (c === 48) c = s.charCodeAt(++i);
+  else if (c >= 49 && c <= 57) {
+    do c = s.charCodeAt(++i);
+    while (c >= 48 && c <= 57);
+  } else return false;
+  if (c === 46) {
+    const from = ++i;
+    c = s.charCodeAt(i);
+    while (c >= 48 && c <= 57) c = s.charCodeAt(++i);
+    if (i === from) return false;
+  }
+  if (c === 101 || c === 69) {
+    c = s.charCodeAt(++i);
+    if (c === 43 || c === 45) c = s.charCodeAt(++i);
+    const from = i;
+    while (c >= 48 && c <= 57) c = s.charCodeAt(++i);
+    if (i === from) return false;
+  }
+  return i === s.length;
+}
+
+/**
+ * Numeric value of a number literal in any spelling the parsers accept: JSON,
+ * JSON5 (`0x1F`, `.5`, `+1`, `Infinity`), YAML (`0o17`, `.inf`, `.nan`), TOML
+ * (`1_000`, `0b11`, `inf`, `nan`) and CSV cells with surrounding spaces. NaN
+ * when the text is not a number.
+ */
+export function parseNumber(raw: string): number {
+  let s = raw.trim();
+  if (s.includes('_')) s = s.replace(/_/g, '');
+  const c = s.charCodeAt(0);
+  if (c === 43 || c === 45) s = s.slice(1);
+  if (!s) return NaN;
+  const sign = c === 45 ? -1 : 1;
+  const n = Number(s); // decimal, 0x/0o/0b and Infinity
+  if (!Number.isNaN(n)) return sign * n;
+  return INF_LITERAL.test(s) ? sign * Infinity : NaN;
+}
+
+/**
+ * JSON text for a number literal: the literal itself when it is a valid JSON
+ * number (so no digit is lost), otherwise what JSON.stringify writes for its
+ * value, except that long decimal literals keep every digit
+ * (`+12345678901234567890` → `12345678901234567890`). Undefined when the text
+ * is not a number at all.
+ */
+export function jsonNumber(raw: string): string | undefined {
+  if (isJsonNumber(raw)) return raw;
+  const s = raw.trim();
+  if (s !== raw && isJsonNumber(s)) return s;
+  const m = LOOSE_DECIMAL.exec(s);
+  if (m && (m[2] || m[3])) {
+    const int = (m[2] ?? '').replace(/_/g, '').replace(/^0+(?=\d)/, '') || '0';
+    const frac = (m[3] ?? '').replace(/_/g, '');
+    const text = `${m[1] === '-' ? '-' : ''}${int}${frac ? '.' + frac : ''}${m[4] !== undefined ? 'e' + m[4] : ''}`;
+    if (significantDigits(int + frac) > 15) return text;
+    const n = Number(text);
+    return Number.isFinite(n) ? String(n) : text;
+  }
+  const n = parseNumber(s);
+  if (Number.isNaN(n)) return NAN_LITERAL.test(s) ? 'null' : undefined;
+  if (!Number.isFinite(n)) return 'null';
+  if (!Number.isSafeInteger(n) && /^[+-]?0[box][\da-f_]+$/i.test(s)) {
+    return (s[0] === '-' ? '-' : '') + BigInt(s.replace(/^[+-]/, '').replace(/_/g, '')).toString();
+  }
+  return String(n);
+}
+
+/** Significant digits in a run of decimal digits (leading and trailing zeros do not count). */
+function significantDigits(digits: string): number {
+  let a = 0;
+  let b = digits.length;
+  while (a < b && digits.charCodeAt(a) === 48) a++;
+  while (b > a && digits.charCodeAt(b - 1) === 48) b--;
+  return b - a;
 }
 
 function growU8(a: Uint8Array, n: number): Uint8Array {

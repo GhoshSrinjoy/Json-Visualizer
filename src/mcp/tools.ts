@@ -26,9 +26,13 @@ import {
 } from '../core/format/text';
 import { aggregateByFolder } from '../core/repo/deps';
 import { repoIndex } from '../core/repo/model';
+import { withCommas } from '../core/util/strings';
 import { PathError, type Workspace } from '../node/workspace';
+import { DATA_TOOLS } from './data-tools';
 
 export interface ToolContext {
+  /** Running as a CLI command (output goes to a terminal or a pipe, not to a model). */
+  cli?: boolean;
   /** Opens a visualization for the user; returns a human-readable status. */
   openVisualizer?: (req: { path: string; view?: string; symbol?: string; line?: number }) => Promise<string>;
 }
@@ -50,6 +54,14 @@ function firstMatch(tree: DataTree, at: string): number {
   const r = runQuery(tree, at, 1);
   if (!r.ids.length) throw new QueryError(`Nothing matches ${at}`, 0);
   return r.ids[0];
+}
+
+/** dataMatchesText, saying "N+ matches" when `total` is only a lower bound. */
+function matchesText(tree: DataTree, ids: number[], total: number, atLeast: boolean, maxValueChars?: number): string {
+  const text = dataMatchesText(tree, ids, total, maxValueChars);
+  if (!atLeast) return text;
+  const nl = text.indexOf('\n');
+  return `${withCommas(total)}+ matches (showing ${ids.length})${nl < 0 ? '' : text.slice(nl)}`;
 }
 
 async function dataStructure(ws: Workspace, abs: string, mode: string, depth?: number): Promise<string> {
@@ -159,7 +171,7 @@ export const TOOLS: ToolDef[] = [
     async run(ws, a) {
       const { tree } = await ws.data(str(a.path) ?? '');
       const r = runQuery(tree, str(a.query) ?? '$', num(a.limit) ?? 50);
-      return dataMatchesText(tree, r.ids, r.total);
+      return matchesText(tree, r.ids, r.total, r.capped);
     },
   },
   {
@@ -187,7 +199,8 @@ export const TOOLS: ToolDef[] = [
         limit: num(a.limit) ?? 50,
       });
       if (r.error) throw new QueryError(`Invalid pattern: ${r.error}`, 0);
-      return dataMatchesText(tree, r.hits.map((h) => h.id), r.truncated ? r.hits.length + 1 : r.hits.length, 200);
+      // Search stops at the limit, so a cut list only tells that there are more.
+      return matchesText(tree, r.hits.map((h) => h.id), r.hits.length, r.truncated, 200);
     },
   },
   {
@@ -207,6 +220,7 @@ export const TOOLS: ToolDef[] = [
       return dataTreeText(tree, { from: at ? firstMatch(tree, at) : tree.root, depth: num(a.depth) ?? 3, maxChildren: num(a.maxChildren) });
     },
   },
+  ...DATA_TOOLS,
   {
     name: 'code_outline',
     title: 'Code outline',

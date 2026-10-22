@@ -6,7 +6,8 @@
 
 import { existsSync, promises as fsp } from 'node:fs';
 import { inflateRawSync } from 'node:zlib';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { analyzeCode, analyzeFunction, findByName, flattenSymbols, MODULE_SYMBOL, type FunctionAnalysis } from '../core/code/analyze';
 import { buildCallGraph, type CallGraphOptions, type ImportTargets } from '../core/code/callgraph';
 import type { CallGraph, CodeOutline, CodeSymbol } from '../core/code/model';
@@ -16,9 +17,10 @@ import { decodeText, detectFormat, isBinaryFormat, parseData } from '../core/dat
 import { xlsxToJson } from '../core/data/xlsx';
 import type { DataFormat, DataTree } from '../core/data/tree';
 import { buildDependencyGraph, familyOf, type DepGraph, type DepOptions } from '../core/repo/deps';
-import { K_DIR, repoIndex, repoPaths, type RepoModel } from '../core/repo/model';
-import { scanRepo, type ScanOptions } from '../core/repo/scan';
+import { K_DIR, K_FILE, K_LINK, repoIndex, repoPaths, type RepoModel } from '../core/repo/model';
+import { scanRepo, type FsAdapter, type ScanOptions } from '../core/repo/scan';
 import { nodeFs, wasmFromDir } from './fs';
+import { isWithin, pathKey, realpathNearest, relativeTo } from './paths';
 
 export class PathError extends Error {}
 
@@ -58,6 +60,8 @@ interface CachedTree {
 
 export class Workspace {
   roots: string[];
+  /** The roots with links, short names and letter case resolved (computed on first use). */
+  private realRoots: string[] | undefined;
   private repoCache = new Map<string, { at: number; repo: Promise<RepoModel> }>();
   private depsCache = new Map<string, { at: number; graph: Promise<DepGraph> }>();
   private trees = new Map<string, CachedTree>();
@@ -81,23 +85,43 @@ export class Workspace {
     this.invalidate();
   }
 
-  /** Absolute path for a user-supplied path, confined to the workspace roots. */
+  /**
+   * Absolute path for a user-supplied path (relative to the first root, absolute, or a file:// URL),
+   * confined to the workspace roots. Symbolic links and junctions are followed: a path whose real
+   * location is outside every root is rejected even when it is spelled as a path inside one.
+   */
   resolvePath(p = '.'): string {
-    const raw = p.trim().replace(/^file:\/\//, '') || '.';
-    const abs = isAbsolute(raw) ? resolve(raw) : resolve(this.root, raw);
-    const ok = this.roots.some((r) => abs === r || abs.startsWith(r.endsWith(sep) ? r : r + sep));
-    if (!ok) throw new PathError(`Path is outside the workspace: ${p} (roots: ${this.roots.join(', ')})`);
-    return abs;
+    let raw = p.trim();
+    if (/^file:/i.test(raw)) {
+      try {
+        raw = fileURLToPath(raw);
+      } catch {
+        throw new PathError(`Not a local file URL: ${p}`);
+      }
+    }
+    const abs = isAbsolute(raw) ? resolve(raw) : resolve(this.root, raw || '.');
+    const lexical = this.roots.some((r) => isWithin(abs, r));
+    const real = realpathNearest(abs);
+    const realRoots = (this.realRoots ??= this.roots.map(realpathNearest));
+    const i = realRoots.findIndex((r) => isWithin(real, r));
+    if (i < 0) {
+      throw new PathError(
+        lexical ? `Path is outside the workspace (through a symbolic link or junction): ${p}` : `Path is outside the workspace: ${p} (roots: ${this.roots.join(', ')})`,
+      );
+    }
+    if (lexical) return abs;
+    // The same place spelled differently (short names, a linked root…): express it under the root.
+    const rel = relativeTo(realRoots[i], real);
+    return rel === '.' ? this.roots[i] : join(this.roots[i], ...rel.split('/'));
   }
 
   /** Workspace-relative path with forward slashes. */
   rel(abs: string): string {
-    const root = this.roots.find((r) => abs === r || abs.startsWith(r + sep)) ?? this.root;
-    return relative(root, abs).split(sep).join('/') || '.';
+    return relativeTo(this.rootOf(abs), abs);
   }
 
   rootOf(abs: string): string {
-    return this.roots.find((r) => abs === r || abs.startsWith(r + sep)) ?? this.root;
+    return this.roots.find((r) => isWithin(abs, r)) ?? this.root;
   }
 
   async isDirectory(abs: string): Promise<boolean> {
@@ -139,16 +163,32 @@ export class Workspace {
     const ttl = this.options.scanTtlMs ?? 15_000;
     const hit = this.depsCache.get(key);
     if (hit && !force && Date.now() - hit.at < ttl) return hit.graph;
-    const graph = this.repo(dir, force).then((repo) => buildDependencyGraph(repo, nodeFs, options));
+    const graph = this.repo(dir, force).then((repo) => buildDependencyGraph(repo, this.linkSafeFs(repo), options));
     this.depsCache.set(key, { at: Date.now(), graph });
     graph.catch(() => this.depsCache.delete(key));
     return graph;
   }
 
   invalidate(): void {
+    this.realRoots = undefined;
     this.repoCache.clear();
     this.depsCache.clear();
     this.trees.clear();
+  }
+
+  /** File access for analyses of a scan: entries that are links are read only when they lead somewhere inside the roots. */
+  private linkSafeFs(repo: RepoModel): FsAdapter {
+    const paths = repoPaths(repo);
+    const links = new Set<string>();
+    for (let i = 0; i < paths.length; i++) if (repo.kind[i] === K_LINK) links.add(pathKey(join(repo.root, ...paths[i].split('/'))));
+    if (!links.size) return nodeFs;
+    return {
+      ...nodeFs,
+      readFile: async (p, maxBytes) => {
+        if (links.has(pathKey(p))) this.resolvePath(p);
+        return nodeFs.readFile(p, maxBytes);
+      },
+    };
   }
 
   // ------------------------------------------------------------ data files
@@ -215,7 +255,7 @@ export class Workspace {
 
   /** Call graph over files and/or directories (directories are expanded to their code files). */
   async callGraph(paths: string[], options: CallGraphOptions & { maxFiles?: number } = {}): Promise<CallGraph> {
-    const maxFiles = options.maxFiles ?? 400;
+    const maxFiles = (options.maxFiles ??= 2000) + 1; // one file over the limit marks the CallGraph `truncated` (see buildCallGraph)
     const files: string[] = [];
     for (const p of paths.length ? paths : ['.']) {
       const abs = this.resolvePath(p);
@@ -281,7 +321,8 @@ export class Workspace {
     // Prefilter by a cheap text search, then parse candidates.
     const candidates: string[] = [];
     for (let i = 0; i < rels.length; i++) {
-      if (repo.kind[i] === K_DIR || repo.size[i] > 2 * 1024 * 1024 || !languageFor(rels[i])) continue;
+      // Links are not followed (like the scan itself): they could lead outside the workspace.
+      if (repo.kind[i] !== K_FILE || repo.size[i] > 2 * 1024 * 1024 || !languageFor(rels[i])) continue;
       candidates.push(join(base, rels[i]));
     }
     const batch = 24;

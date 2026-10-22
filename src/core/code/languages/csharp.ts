@@ -397,10 +397,9 @@ export const csharp: LanguageSpec = {
     'method_declaration', 'constructor_declaration', 'destructor_declaration', 'operator_declaration', 'conversion_operator_declaration',
     'local_function_statement', 'accessor_declaration', 'lambda_expression', 'anonymous_method_expression', ...TYPE_DECLS,
   ],
-  decisionTypes: [
-    'if_statement', 'for_statement', 'foreach_statement', 'while_statement', 'do_statement', 'catch_clause', 'conditional_expression',
-    'switch_section', 'switch_expression_arm',
-  ],
+  decisionTypes: ['if_statement', 'catch_clause', 'conditional_expression', 'switch_expression_arm'],
+  // The `_ =>` arm of a switch expression is its default.
+  decisionWeight: (n) => (n.type === 'switch_expression_arm' && named(n)[0]?.type === 'discard' ? 0 : 1),
   calls: {
     invocation_expression: { callee: (n) => field(n, 'function'), name: (n) => invoked(field(n, 'function')) },
     object_creation_expression: { callee: (n) => field(n, 'type'), kind: 'new', name: (n) => typeName(field(n, 'type')) },

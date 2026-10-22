@@ -1,6 +1,6 @@
 /** The contract every language adapter implements, plus shared helpers. */
 
-import type { FlowRules } from './ir';
+import { loopKindOf, type FlowRules, type LoopKind, type SwitchShape } from './ir';
 import type { CallRef, CodeSymbol, ImportRef, SymbolKind } from './model';
 import { NAME_TYPES, clean, docComment, field, named, paramsText, rangeOf, walk } from './syntax';
 import type { SyntaxNode } from './treesitter';
@@ -64,8 +64,13 @@ export interface LanguageSpec {
   calls: Record<string, CallShape>;
   /** Node types that start a new function scope (calls/identifiers inside are not attributed to the parent). */
   functionTypes: string[];
-  /** Node types that add a decision point for complexity. */
+  /**
+   * Node types that add a decision point (branches, catch clauses, conditional expressions…).
+   * Loops and switch cases are counted from the flow rules; see `complexity()`.
+   */
   decisionTypes: string[];
+  /** Decision points a `decisionTypes` node adds when that is not always 1 (0 for a catch-all arm…). */
+  decisionWeight?: (node: SyntaxNode) => number;
 }
 
 /**
@@ -76,11 +81,9 @@ export class SymbolBuilder {
   readonly nodes = new Map<string, SyntaxNode>();
   private readonly usedIds = new Set<string>();
   private readonly fnTypes: Set<string>;
-  private readonly decisionTypes: Set<string>;
 
   constructor(readonly spec: LanguageSpec) {
     this.fnTypes = new Set(spec.functionTypes);
-    this.decisionTypes = new Set(spec.decisionTypes);
   }
 
   make(
@@ -120,7 +123,7 @@ export class SymbolBuilder {
     sym.params = this.spec.params(node);
     if (body) {
       sym.calls = collectCalls(body, this.spec, this.fnTypes);
-      sym.complexity = complexity(body, this.decisionTypes, this.fnTypes);
+      sym.complexity = complexity(body, this.spec);
     }
     return sym;
   }
@@ -189,16 +192,87 @@ export function collectCalls(body: SyntaxNode, spec: LanguageSpec, fnTypes: Set<
 
 const BOOL_TOKENS = new Set(['&&', '||', 'and', 'or', '??']);
 
-export function complexity(body: SyntaxNode, decisionTypes: Set<string>, fnTypes: Set<string>): number {
+interface ComplexityRules {
+  fnTypes: Set<string>;
+  decisions: Set<string>;
+  switches: Set<string>;
+  loops: Map<string, LoopKind>;
+}
+
+const complexityRules = new WeakMap<LanguageSpec, ComplexityRules>();
+
+function rulesFor(spec: LanguageSpec): ComplexityRules {
+  let r = complexityRules.get(spec);
+  if (!r) {
+    const f = spec.flow;
+    const loops = new Map<string, LoopKind>();
+    const add = (types: string[] | undefined, kind: LoopKind) => types?.forEach((t) => loops.set(t, kind));
+    add(f.whiles, 'while');
+    add(f.doWhiles, 'doWhile');
+    add(f.fors, 'for');
+    add(f.forEachs, 'forEach');
+    add(f.infinites, 'infinite');
+    r = { fnTypes: new Set(spec.functionTypes), decisions: new Set(spec.decisionTypes), switches: new Set(f.switches), loops };
+    complexityRules.set(spec, r);
+  }
+  return r;
+}
+
+/**
+ * Cyclomatic complexity (McCabe): decision points + 1. The outline and the flow view both show
+ * this number. A decision point is
+ * - an `if`, `else if` / `elif` / `elsif`, `unless` (also as statement modifiers), a `#if` / `#ifdef`
+ *   block inside a body, or a Rust `let … else`;
+ * - a loop that tests something on every round: `for`, for-each, `while`, `until`, `do … while`,
+ *   and Ruby iterator blocks (`items.each do`). Loops that only exit through `break` (`loop`,
+ *   `for {}`, `for (;;)`, `while (true)`, `while True:`) do not count;
+ * - each case of a `switch` / `match` / `case` / `select` except the default or catch-all; labels
+ *   that share one body (`case 1: case 2:`) count once, as they do in the flowchart. Each arm of
+ *   a C# `switch` or PHP `match` expression counts too, except `_` and `default`;
+ * - each `catch` / `except` / `rescue` clause;
+ * - each short-circuit operator (`&&`, `||`, `and`, `or`, `??`), conditional expression
+ *   (`a ? b : c`, `b if a else c`) and comprehension filter (`[x for x in xs if x]`);
+ * - each Rust `?` (an early return).
+ * Nested functions, lambdas and classes are scopes of their own and are not counted.
+ */
+export function complexity(body: SyntaxNode, spec: LanguageSpec): number {
+  const r = rulesFor(spec);
   let c = 1;
   walk(body, (n) => {
-    if (n.id !== body.id && fnTypes.has(n.type)) return false;
-    if (n.isNamed) {
-      if (decisionTypes.has(n.type)) c++;
-    } else if (BOOL_TOKENS.has(n.type)) c++;
+    if (n.id !== body.id && r.fnTypes.has(n.type)) return false;
+    if (!n.isNamed) {
+      if (BOOL_TOKENS.has(n.type)) c++;
+      return true;
+    }
+    const loop = r.loops.get(n.type);
+    if (loop) {
+      if (loopKindOf(n, loop, spec.flow) !== 'infinite') c++;
+    } else if (r.switches.has(n.type)) {
+      c += caseBranches(spec.flow.switchShape(n), spec.flow.fallthrough);
+    } else if (r.decisions.has(n.type)) {
+      c += spec.decisionWeight ? spec.decisionWeight(n) : 1;
+    }
     return true;
   });
   return c;
+}
+
+/** Non-default cases with a body of their own (empty cases fall into the next one, as in the flowchart). */
+function caseBranches(shape: SwitchShape, fallthrough: boolean): number {
+  let n = 0;
+  let pending = false;
+  let pendingDefault = false;
+  for (const c of shape.cases) {
+    if (fallthrough && !c.body.length) {
+      pending = true;
+      pendingDefault ||= c.isDefault;
+      continue;
+    }
+    if (!c.isDefault && !pendingDefault) n++;
+    pending = pendingDefault = false;
+  }
+  if (pending && !pendingDefault) n++;
+  return n;
 }
 
 // ---------------------------------------------------------------- params

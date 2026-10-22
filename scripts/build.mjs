@@ -1,5 +1,6 @@
 // Builds every StructLens artifact with esbuild:
-//   dist/extension.js   VS Code extension (Node, CJS)
+//   dist/extension.js   VS Code extension entry (Node, CJS): small, it runs in every window
+//   dist/features.js    the extension's implementation, required by extension.js on first use
 //   dist/cli.js         CLI + MCP server (Node, CJS, executable)
 //   dist/webview/*      UI bundle (browser; the data worker is inlined)
 //   dist/web/*          stand-alone static site (no backend)
@@ -65,6 +66,15 @@ const configs = [
   {
     ...common,
     entryPoints: { extension: join(root, 'src/extension/extension.ts') },
+    outdir: dist,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    external: ['vscode', './features.js'],
+  },
+  {
+    ...common,
+    entryPoints: { features: join(root, 'src/extension/features.ts') },
     outdir: dist,
     platform: 'node',
     format: 'cjs',

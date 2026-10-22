@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { editCaps } from '../../src/core/data/edit';
 import { detectFormat, parseData, sniffFormat } from '../../src/core/data/formats';
-import { F_ATTR, F_ELEMENT, F_TEXT, T_BOOLEAN, T_NULL, T_NUMBER, T_OBJECT, T_STRING } from '../../src/core/data/tree';
+import { runQuery } from '../../src/core/data/query';
+import { F_ALIAS, F_ATTR, F_COPY, F_ELEMENT, F_TEXT, T_BOOLEAN, T_NULL, T_NUMBER, T_OBJECT, T_STRING } from '../../src/core/data/tree';
 
 describe('YAML', () => {
   const text = `name: demo
@@ -44,6 +46,71 @@ ref: *A
     const bad = parseData('a: [1, 2\nb: : c', 'yaml');
     expect(bad.errors.length).toBeGreaterThan(0);
     expect(bad.errors[0].line).toBeGreaterThan(0);
+  });
+});
+
+describe('YAML aliases and merge keys', () => {
+  const text = 'base: &b\n  host: db\n  port: 5432\ndev:\n  <<: *b\n  name: dev\nref: *b\nnum: &n 42\nalso: *n\n';
+
+  it('resolves aliases to copies of the anchored node', () => {
+    const tree = parseData(text, 'yaml');
+    expect(tree.errors).toEqual([]);
+    const value = { base: { host: 'db', port: 5432 }, dev: { host: 'db', port: 5432, name: 'dev' }, ref: { host: 'db', port: 5432 }, num: 42, also: 42 };
+    expect(tree.toJS()).toEqual(value);
+    expect(JSON.parse(tree.toJSON())).toEqual(value);
+    expect(runQuery(tree, '$.dev.host').ids.map((id) => tree.value(id))).toEqual(['db']);
+    expect(tree.typeName(runQuery(tree, '$.ref').ids[0])).toBe('object');
+  });
+
+  it('points copies at the anchor, while the cursor finds the original', () => {
+    const tree = parseData(text, 'yaml');
+    const anchorHost = runQuery(tree, '$.base.host').ids[0];
+    for (const path of ['$.ref.host', '$.dev.host']) {
+      const copy = runQuery(tree, path).ids[0];
+      expect(tree.flags[copy] & F_COPY).toBeTruthy();
+      expect([tree.start(copy), tree.end(copy)]).toEqual([tree.start(anchorHost), tree.end(anchorHost)]);
+    }
+    const ref = runQuery(tree, '$.ref').ids[0];
+    expect(tree.start(ref)).toBe(text.indexOf('host'));
+    expect(tree.pathString(tree.nodeAtOffset(text.indexOf('db')))).toBe('$.base.host');
+    expect(tree.pathString(tree.nodeAtOffset(text.indexOf('name: dev')))).toBe('$.dev.name');
+    expect(tree.pathString(tree.nodeAtOffset(text.indexOf('42')))).toBe('$.num');
+  });
+
+  it('keeps copies read-only for in-place edits (their positions are the anchor)', () => {
+    const tree = parseData(text, 'yaml');
+    const none = { set: false, rename: false, delete: false, add: false };
+    for (const path of ['$.ref', '$.ref.host', '$.dev.host', '$.also']) expect(editCaps(tree, runQuery(tree, path).ids[0]), path).toEqual(none);
+    expect(editCaps(tree, runQuery(tree, '$.dev.name').ids[0]).set).toBe(true);
+  });
+
+  it('merges with YAML 1.1 precedence: own keys, then earlier sources', () => {
+    const tree = parseData('a: &a {x: 1, y: 1, z: 1}\nb: &b {x: 2, w: 2}\nc:\n  y: own\n  <<: [*a, *b]\n  z: own\nd: {<<: {i: 1}, j: 2}\ne: &e {<<: *a, v: 3}\nf: {<<: *e}\n"<<": plain\n', 'yaml');
+    const js = tree.toJS() as Record<string, unknown>;
+    expect(js.c).toEqual({ y: 'own', x: 1, w: 2, z: 'own' });
+    expect(Object.keys(js.c as object)).toEqual(['y', 'x', 'w', 'z']);
+    expect(js.d).toEqual({ i: 1, j: 2 });
+    expect(js.f).toEqual({ x: 1, y: 1, z: 1, v: 3 });
+    expect(js['<<']).toBe('plain');
+  });
+
+  it('leaves circular and unknown aliases as text with an issue', () => {
+    const tree = parseData('a: &a [1, *a]\nm: &m\n  k: 1\n  <<: *m\nx: *nope\n', 'yaml');
+    expect(tree.toJS()).toEqual({ a: [1, '*a'], m: { k: 1 }, x: '*nope' });
+    expect(tree.errors.map((e) => e.message)).toEqual(['Circular alias *a is left unexpanded', 'Circular merge of *m is skipped', 'Unknown alias *nope']);
+    const alias = runQuery(tree, '$.x').ids[0];
+    expect(tree.flags[alias] & F_ALIAS).toBeTruthy();
+  });
+
+  it('caps alias bombs', () => {
+    const lines = ['a: &a [lol, lol, lol, lol, lol, lol, lol, lol, lol, lol]'];
+    for (let i = 1; i < 9; i++) lines.push(`${'abcdefghi'[i]}: &${'abcdefghi'[i]} [${Array(10).fill(`*${'abcdefghi'[i - 1]}`).join(', ')}]`);
+    const tree = parseData(lines.join('\n'), 'yaml');
+    expect(tree.count).toBeGreaterThan(1_000_000);
+    expect(tree.count).toBeLessThan(1_100_000);
+    expect(tree.errors).toHaveLength(1);
+    expect(tree.errors[0].message).toMatch(/^Aliases expand to more than 1,000,000 values; \*\w and later aliases are left unexpanded$/);
+    expect(tree.toJSON(tree.root, 0)).toContain('"*');
   });
 });
 
@@ -129,6 +196,37 @@ name = "Nail"
   it('reports parse errors with positions', () => {
     const tree = parseData('a = 1\nb = = 2\n', 'toml');
     expect(tree.errors[0].line).toBe(2);
+  });
+
+  it('finds the node at the cursor when tables interleave', () => {
+    const src = '[tool.poetry]\nname = "x"\n\n[build-system]\nrequires = ["a"]\n# build backend\nbackend = "b"\n\n[tool.black]\nline-length = 88\n';
+    const tree = parseData(src, 'toml');
+    const at = (s: string) => tree.pathString(tree.nodeAtOffset(src.indexOf(s)));
+    expect(at('backend =')).toBe("$['build-system'].backend");
+    expect(at('requires')).toBe("$['build-system'].requires");
+    expect(at('"a"')).toBe("$['build-system'].requires");
+    expect(at('# build')).toBe("$['build-system']");
+    expect(at('line-length')).toBe("$.tool.black['line-length']");
+    expect(at('[tool.black]')).toBe('$.tool.black');
+    expect(at('name')).toBe('$.tool.poetry.name');
+  });
+
+  it('keeps what it can read around syntax errors', () => {
+    const cut = parseData('[package]\nname = "x"\n[dependencies]\nserde = { version = "1"\n', 'toml');
+    expect(cut.toJS()).toEqual({ package: { name: 'x' }, dependencies: {} });
+    expect(cut.errors).toHaveLength(1);
+    expect(cut.errors[0]).toMatchObject({ line: 5, col: 1 });
+    expect(cut.errors[0].message).toContain('(line 4 skipped)');
+
+    const middle = parseData('a = 1\nb = = 2\nc = 3\n[t]\nx = { y = 1\nz = 2\n[u]\nv = 4\n', 'toml');
+    expect(middle.toJS()).toEqual({ a: 1, c: 3, t: {}, u: { v: 4 } });
+    expect(middle.errors.map((e) => e.line)).toEqual([2, 6]);
+    expect(middle.pathString(middle.nodeAtOffset(middle.text.indexOf('v = 4')))).toBe('$.u.v');
+
+    // A broken header drops its table rather than moving its keys to the previous one.
+    const header = parseData('[a]\nx = 1\n[b\ny = 2\n[c]\nz = 3\n', 'toml');
+    expect(header.toJS()).toEqual({ a: { x: 1 }, c: { z: 3 } });
+    expect(header.errors[0]).toMatchObject({ line: 3, col: 3 });
   });
 });
 

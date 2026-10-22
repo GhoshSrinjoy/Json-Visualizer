@@ -12,12 +12,33 @@ import type { CodeOutline, CodeSymbol, FunctionAnalysis } from './model';
 import { findAtLine, findById, MODULE_SYMBOL } from './symbols';
 import { countLines } from './loc';
 import { languageFor, type LanguageInfo } from './registry';
-import { SymbolBuilder, type LanguageSpec } from './spec';
+import { complexity, SymbolBuilder, type LanguageSpec } from './spec';
 import { countErrors, rangeOf } from './syntax';
 import { isTreeSitterConfigured, parseCode, type SyntaxNode } from './treesitter';
 
-const cache = new Map<string, CodeOutline>();
-const CACHE_LIMIT = 200;
+/**
+ * Outlines by path and content, least recently used first, bounded by an estimate of their
+ * memory in bytes (see `analyzeCode`): a workspace call graph over thousands of files fits, so
+ * a focused second pass does not parse everything again.
+ */
+const cache = new Map<string, { outline: CodeOutline; size: number }>();
+const CACHE_BUDGET = 128 * 1024 * 1024;
+let cachedSize = 0;
+
+function remember(key: string, outline: CodeOutline, size: number): void {
+  const old = cache.get(key);
+  if (old) {
+    cache.delete(key);
+    cachedSize -= old.size;
+  }
+  cache.set(key, { outline, size });
+  cachedSize += size;
+  while (cachedSize > CACHE_BUDGET && cache.size > 1) {
+    const [k, v] = cache.entries().next().value!;
+    cache.delete(k);
+    cachedSize -= v.size;
+  }
+}
 
 /** FNV-1a over the full text: cheap enough (~1 ms/MB) to key caches safely. */
 export function hashText(text: string): string {
@@ -39,10 +60,15 @@ export async function analyzeCode(path: string, text: string, languageId?: strin
   if (!lang) return undefined;
   const key = `${path}\0${lang.id}\0${hashText(text)}`;
   const hit = cache.get(key);
-  if (hit) return hit;
+  if (hit) {
+    // Most recently used goes last.
+    cache.delete(key);
+    cache.set(key, hit);
+    return hit.outline;
+  }
   const outline = lang.spec && isTreeSitterConfigured() ? await outlineWithGrammar(path, text, lang) : fallbackOutline(path, text, lang);
-  cache.set(key, outline);
-  if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+  // An outline (symbols, calls, ranges) takes about 3 bytes per source character.
+  remember(key, outline, 3 * text.length + key.length);
   return outline;
 }
 
@@ -103,7 +129,8 @@ function functionAnalysis(node: SyntaxNode, sym: CodeSymbol, spec: LanguageSpec)
   const opts = { name: sym.name, symbolId: sym.id, signature: sym.signature, range: sym.range };
   return {
     symbol: sym,
-    flow: buildFlowGraph(ir, opts),
+    // The same count as the outline's `sym.complexity`.
+    flow: buildFlowGraph(ir, { ...opts, complexity: bodyNode ? complexity(bodyNode, spec) : 1 }),
     data: buildDataFlow(node, bodyNode, ir, spec, opts),
   };
 }
@@ -113,9 +140,10 @@ function moduleAnalysis(root: SyntaxNode, spec: LanguageSpec, path: string): Fun
   const ir = conv.stmts(root);
   const name = path.split(/[\\/]/).pop() ?? MODULE_SYMBOL;
   const range = rangeOf(root);
-  const sym: CodeSymbol = { id: MODULE_SYMBOL, name, kind: 'module', range, hasBody: true };
+  const cx = complexity(root, spec);
+  const sym: CodeSymbol = { id: MODULE_SYMBOL, name, kind: 'module', range, hasBody: true, complexity: cx };
   const opts = { name, symbolId: MODULE_SYMBOL, range };
-  return { symbol: sym, flow: buildFlowGraph(ir, opts), data: buildDataFlow(root, root, ir, spec, opts) };
+  return { symbol: sym, flow: buildFlowGraph(ir, { ...opts, complexity: cx }), data: buildDataFlow(root, root, ir, spec, opts) };
 }
 
 function now(): number {

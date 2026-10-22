@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'preact/hooks';
 import { FORMAT_LABELS } from '../../core/data/formats';
+import { CONVERT_TARGETS } from '../../core/data/targets';
 import { formatBytes } from '../../core/util/strings';
 import type { Mode, ViewId } from '../../shared/protocol';
 import { runCommand, type CommandId } from '../commands';
@@ -17,6 +18,7 @@ export const VIEWS: Record<Mode, { id: ViewId; label: string; icon: IconName }[]
     { id: 'table', label: 'Table', icon: 'table' },
     { id: 'schema', label: 'Schema', icon: 'braces' },
     { id: 'text', label: 'Text', icon: 'fileText' },
+    { id: 'compare', label: 'Compare', icon: 'layers' },
   ],
   code: [
     { id: 'structure', label: 'Structure', icon: 'structure' },
@@ -37,6 +39,7 @@ export const VIEWS: Record<Mode, { id: ViewId; label: string; icon: IconName }[]
 export function Toolbar() {
   const init = useStore(app, (s) => s.init);
   const mode = useStore(app, (s) => s.mode);
+  const validationErrors = useStore(app, (s) => s.validationErrors);
   const view = useStore(app, (s) => s.view);
   const summary = useStore(app, (s) => s.summary);
   const commands = useStore(app, (s) => s.commands.join(','));
@@ -61,7 +64,11 @@ export function Toolbar() {
     if (has('exportPng')) items.push({ label: 'PNG image', icon: 'image', onSelect: () => runCommand('exportPng') });
     if (has('exportSvg')) items.push({ label: 'SVG vector', icon: 'image', onSelect: () => runCommand('exportSvg') });
     if (has('exportMermaid')) items.push({ label: 'Mermaid diagram', icon: 'code', onSelect: () => runCommand('exportMermaid') });
-    if (has('exportJson')) items.push({ label: mode === 'data' ? 'JSON (selection or document)' : 'JSON data', icon: 'braces', onSelect: () => runCommand('exportJson') });
+    if (has('exportJson') && !has('exportAs')) items.push({ label: mode === 'data' ? 'JSON (selection or document)' : 'JSON data', icon: 'braces', onSelect: () => runCommand('exportJson') });
+    if (has('exportAs')) {
+      items.push({ separator: true }, { heading: 'Save data as (selection or document)' });
+      for (const t of [{ id: 'json', label: 'JSON' }, ...CONVERT_TARGETS]) items.push({ label: t.label, icon: t.id === 'json' ? 'braces' : 'fileText', onSelect: () => runCommand('exportAs', t.id) });
+    }
     return items;
   };
 
@@ -76,8 +83,11 @@ export function Toolbar() {
       { heading: 'Graph' },
       { label: 'Left to right', checked: settings.direction === 'LR', onSelect: () => updateSettings({ direction: 'LR' }) },
       { label: 'Top to bottom', checked: settings.direction === 'TB', onSelect: () => updateSettings({ direction: 'TB' }) },
+      ...(has('toggleEdgeLabels') ? [{ label: 'Key labels on edges', kbd: 'L', checked: settings.edgeLabels, onSelect: () => runCommand('toggleEdgeLabels') }] : []),
       ...depthItems,
       { label: `Rows per card: ${settings.childPageSize}`, onSelect: () => updateSettings({ childPageSize: settings.childPageSize >= 200 ? 25 : settings.childPageSize * 2 }) },
+      { separator: true },
+      { label: 'Keyboard shortcuts', icon: 'keyboard', kbd: '?', onSelect: () => app.set({ shortcutsOpen: true }) },
       { separator: true },
       { heading: 'Theme' },
       { label: 'Match editor / system', checked: settings.theme === 'auto', onSelect: () => updateSettings({ theme: 'auto' }) },
@@ -96,6 +106,11 @@ export function Toolbar() {
           </span>
           <span class="brand-sub">{subtitle}</span>
         </div>
+        {mode === 'data' && validationErrors !== null && (
+          <span class={`pill ${validationErrors ? 'danger' : 'ok'}`} title={validationErrors ? 'Schema validation errors: see the Inspector' : 'Valid against its schema'}>
+            {validationErrors ? `${validationErrors.toLocaleString()} schema ${validationErrors === 1 ? 'error' : 'errors'}` : 'schema ✓'}
+          </span>
+        )}
         {mode === 'data' && summary && summary.errors.length > 0 && (
           <span class="pill danger" title={summary.errors[0].message}>
             {summary.errors.length} {summary.errors.length === 1 ? 'error' : 'errors'}
@@ -157,7 +172,14 @@ function SearchBox({ mode }: { mode: Mode }) {
     return () => window.removeEventListener('structlens:focus-search', focus);
   }, []);
   const placeholder = search.path ? 'JSONPath, e.g. $.users[?(@.age > 30)].name' : mode === 'data' ? 'Search keys & values' : mode === 'code' ? 'Find symbols or nodes' : 'Find files';
-  const count = search.busy ? '…' : search.error ? '!' : search.query ? (search.total ? `${search.index + 1}/${search.total.toLocaleString()}` : '0') : '';
+  const count = search.busy ? '…' : search.error ? '!' : search.query ? (search.total ? `${search.index + 1}/${search.total.toLocaleString()}${search.truncated ? '+' : ''}` : '0') : '';
+  const textMode = mode === 'data' && !search.path;
+  const SCOPES = { all: ['K·V', 'Keys and values'], keys: ['K', 'Keys only'], values: ['V', 'Values only'] } as const;
+  const toggle = (on: boolean, label: string, title: string, onClick: () => void, cls = '') => (
+    <span class={`mode opt ${cls} ${on ? 'on' : ''}`} title={title} role="switch" aria-checked={on} onClick={onClick}>
+      {label}
+    </span>
+  );
   return (
     <div class="search" title={search.error}>
       <Icon name={search.path ? 'terminal' : 'search'} />
@@ -189,6 +211,16 @@ function SearchBox({ mode }: { mode: Mode }) {
         </>
       )}
       {!search.query && <kbd style={{ marginRight: '6px' }}>/</kbd>}
+      {textMode && (
+        <>
+          {toggle(search.caseSensitive, 'Aa', 'Match case', () => setSearch({ caseSensitive: !search.caseSensitive }))}
+          {toggle(search.wholeWord, 'ab', 'Match whole word', () => setSearch({ wholeWord: !search.wholeWord }), 'word')}
+          {toggle(search.regex, '.*', 'Use regular expression', () => setSearch({ regex: !search.regex }))}
+          {toggle(search.scope !== 'all', SCOPES[search.scope][0], `Search in: ${SCOPES[search.scope][1].toLowerCase()} (click to change)`, () =>
+            setSearch({ scope: search.scope === 'all' ? 'keys' : search.scope === 'keys' ? 'values' : 'all' }),
+          )}
+        </>
+      )}
       {mode === 'data' && (
         <span class={`mode ${search.path ? 'on' : ''}`} title="Toggle JSONPath query mode" onClick={() => setSearch({ path: !search.path })}>
           $

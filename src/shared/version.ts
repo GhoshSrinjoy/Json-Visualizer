@@ -2,4 +2,4 @@
 
 declare const __STRUCTLENS_VERSION__: string | undefined;
 
-export const VERSION: string = typeof __STRUCTLENS_VERSION__ === 'string' ? __STRUCTLENS_VERSION__ : '2.0.0-dev';
+export const VERSION: string = typeof __STRUCTLENS_VERSION__ === 'string' ? __STRUCTLENS_VERSION__ : '2.1.0-dev';

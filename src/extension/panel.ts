@@ -14,6 +14,7 @@ import { K_DIR, type RepoModel } from '../core/repo/model';
 import type { HostEvent, InitPayload, Mode, RequestMap, RpcRequest, Target, UiToHost, ViewId } from '../shared/protocol';
 import { VERSION } from '../shared/version';
 import { saveUiSettings, uiSettings } from './config';
+import { loadSchemaFor, pickSchema } from './schemas';
 import type { Services } from './services';
 
 export interface OpenOptions {
@@ -22,6 +23,8 @@ export interface OpenOptions {
   line?: number;
   /** Open beside the active editor (default), or in the active group. */
   beside?: boolean;
+  /** Data files: compare with this file (URI string). */
+  compare?: string;
 }
 
 /** Decides how to visualize a URI. */
@@ -186,7 +189,7 @@ export class VisualizerPanel {
     const style = webview.asWebviewUri(vscode.Uri.joinPath(base, 'main.css'));
     const csp = [
       "default-src 'none'",
-      `img-src ${webview.cspSource} data: blob:`,
+      `img-src ${webview.cspSource} data: blob: https:`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `font-src ${webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
@@ -217,9 +220,10 @@ export class VisualizerPanel {
       view: this.initial.view,
       symbol: this.initial.symbol,
       line: this.initial.line,
+      compare: this.initial.compare,
       settings: uiSettings(),
       host: 'vscode',
-      capabilities: { reveal: !isBinaryFormat(this.target.format), code: true, repo: vscode.Uri.parse(this.target.uri).scheme === 'file', settings: true },
+      capabilities: { reveal: !isBinaryFormat(this.target.format), code: true, repo: vscode.Uri.parse(this.target.uri).scheme === 'file', settings: true, edit: !isBinaryFormat(this.target.format) },
       version: VERSION,
     };
   }
@@ -238,7 +242,7 @@ export class VisualizerPanel {
   }
 
   navigate(opts: OpenOptions): void {
-    if (opts.view || opts.symbol || opts.line !== undefined) this.post({ type: 'navigate', view: opts.view, symbol: opts.symbol, line: opts.line });
+    if (opts.view || opts.symbol || opts.line !== undefined || opts.compare) this.post({ type: 'navigate', view: opts.view, symbol: opts.symbol, line: opts.line, compare: opts.compare });
   }
 
   private async onMessage(m: UiToHost): Promise<void> {
@@ -348,6 +352,40 @@ export class VisualizerPanel {
       case 'copyText':
         await vscode.env.clipboard.writeText((req.params as RequestMap['copyText']['params']).text);
         return null;
+      case 'applyEdit': {
+        const p = req.params as RequestMap['applyEdit']['params'];
+        const u = this.resolveUri(p.uri);
+        const doc = await vscode.workspace.openTextDocument(u);
+        const range = (from: number, to: number) => new vscode.Range(doc.positionAt(from), doc.positionAt(to));
+        // Offsets come from the text the view parsed: refuse if the document has moved on since.
+        for (const e of p.edits) if (doc.getText(range(e.check.from, e.offset + e.length)) !== e.check.text) throw new Error('The file changed since the view loaded it. Try again in a moment.');
+        const we = new vscode.WorkspaceEdit();
+        for (const e of p.edits) we.replace(u, range(e.offset, e.offset + e.length), e.text);
+        if (!(await vscode.workspace.applyEdit(we))) throw new Error('VS Code did not apply the edit.');
+        // With no editor showing the file, an unsaved change would be invisible: save it (Undo still works in an editor).
+        if (!vscode.window.visibleTextEditors.some((ed) => ed.document === doc)) await doc.save();
+        return null;
+      }
+      case 'loadSchema': {
+        const p = req.params as RequestMap['loadSchema']['params'];
+        return await loadSchemaFor(this.resolveUri(p.uri), p.ref);
+      }
+      case 'pickDataFile': {
+        const here = this.resolveUri((req.params as RequestMap['pickDataFile']['params']).uri);
+        const [picked] = (await vscode.window.showOpenDialog({ defaultUri: vscode.Uri.joinPath(here, '..'), canSelectMany: false, openLabel: 'Compare' })) ?? [];
+        if (!picked) return null;
+        const name = basename(picked.path);
+        return { name, bytes: new Uint8Array(await vscode.workspace.fs.readFile(picked)), format: detectFormat(name) };
+      }
+      case 'pickSchema':
+        return await pickSchema(this.resolveUri((req.params as RequestMap['pickSchema']['params']).uri));
+      case 'openExternal': {
+        // Only web and mail links: never command:, file: or other schemes from document content.
+        const url = (req.params as RequestMap['openExternal']['params']).url;
+        if (!/^(?:https?:|mailto:)/i.test(url)) throw new Error('Only web and mail links can be opened.');
+        await vscode.env.openExternal(vscode.Uri.parse(url, true));
+        return null;
+      }
       case 'setSettings':
         await saveUiSettings(req.params as RequestMap['setSettings']['params']);
         return null;

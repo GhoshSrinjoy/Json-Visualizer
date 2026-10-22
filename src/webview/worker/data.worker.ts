@@ -5,15 +5,24 @@
  * UI responsive. Only small, display-ready slices cross the thread boundary.
  */
 
+import { convertTree } from '../../core/data/convert';
+import { generateTypes } from '../../core/data/typegen';
+import { schemaUriOf, validateTree } from '../../core/data/validate';
+import { parse as parseYaml } from 'yaml';
+import { diffToText, diffTrees, type DiffEntry } from '../../core/data/diff';
+import { editCaps, editsFor } from '../../core/data/edit';
 import { decodeText, detectFormat, parseData } from '../../core/data/formats';
 import { xlsxToJson, type InflateRaw } from '../../core/data/xlsx';
 import { runQuery } from '../../core/data/query';
 import { inferSchema, schemaEnum, schemaFormat, schemaToJsonSchema, schemaToText, schemaToTypeScript, typeExpr, type SchemaNode } from '../../core/data/schema';
 import { searchTree } from '../../core/data/search';
-import { DataTree, F_ATTR, F_ELEMENT, F_ERROR, F_TEXT, T_ARRAY, T_OBJECT, T_STRING, TYPE_NAMES } from '../../core/data/tree';
-import type { CardData, NodeDetail, NodeInfo, SchemaView, Summary, TableCell, TableInfo, WorkerApi, WorkerRequest, WorkerResponse } from './protocol';
+import { DataTree, F_ATTR, F_ELEMENT, F_ERROR, F_TEXT, T_ARRAY, T_OBJECT, T_STRING, TYPE_NAMES, type DataFormat, type PathSegment } from '../../core/data/tree';
+import type { CardData, DiffRow, NodeDetail, NodeInfo, SchemaView, Summary, TableCell, TableInfo, WorkerApi, WorkerRequest, WorkerResponse } from './protocol';
+import { cellKey, filterRows, sortRows, valueKey, type SortKey } from './table';
 
 let tree: DataTree | null = null;
+/** Document compared with (the left side of a diff; `tree` is the right side). */
+let other: DataTree | null = null;
 let name = '';
 /** Size of the loaded file (text length is not the file size for decoded or converted documents). */
 let sourceBytes = 0;
@@ -90,7 +99,7 @@ function summary(): Summary {
     maxDepth: t.maxDepth,
     lines: t.lineCount(),
     parseMs: t.parseMs,
-    errors: t.errors.slice(0, 50).map((e) => ({ line: e.line, col: e.col, message: e.message, offset: e.offset })),
+    errors: t.errors.slice(0, 50).map((e) => ({ line: e.line, col: e.col, message: e.message, offset: e.offset, ...(e.severity ? { severity: e.severity } : {}) })),
     typeCounts: counts,
     xml: t.xmlLike,
   };
@@ -162,33 +171,68 @@ function cellFor(t: DataTree, row: number, column: string, tabular: boolean): Ta
   return null;
 }
 
-function sortKey(t: DataTree, row: number, column: string): string | number {
-  for (let c = t.firstChild(row); c >= 0; c = t.nextSibling(c)) {
-    if (String(t.key(c)) === column) {
-      const v = t.value(c);
-      if (typeof v === 'number') return v;
-      if (v === undefined) return t.childCount[c];
-      return v === null ? '' : String(v).toLowerCase();
-    }
-  }
-  return '';
-}
-
 const inflateRaw: InflateRaw = async (data) => {
   const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 };
 
+async function parseInput({ bytes, text, format, name: n }: { bytes?: ArrayBuffer; text?: string; format?: DataFormat; name: string }): Promise<DataTree> {
+  const excel = (format ?? detectFormat(n)) === 'xlsx' && bytes;
+  const src = excel ? await xlsxToJson(new Uint8Array(bytes), inflateRaw) : (text ?? (bytes ? decodeText(new Uint8Array(bytes)) : ''));
+  const fmt = excel ? 'xlsx' : (format ?? detectFormat(n, undefined, src.slice(0, 64 * 1024)) ?? 'json');
+  return parseData(src, fmt);
+}
+
+/** Diff entries as rows in document order, each knowing how many rows sit below it (for collapsing). */
+function diffRows(entry: DiffEntry, left: DataTree, right: DataTree): DiffRow[] {
+  const rows: DiffRow[] = [];
+  const preview = (t: DataTree, id: number) => (id >= 0 ? { text: t.preview(id, 120), type: TYPE_NAMES[t.type[id]] } : undefined);
+  const stack: { e: DiffEntry; depth: number }[] = [{ e: entry, depth: 0 }];
+  const open: number[] = [];
+  while (stack.length) {
+    const { e, depth } = stack.pop()!;
+    while (open.length && rows[open[open.length - 1]].depth >= depth) {
+      const i = open.pop()!;
+      rows[i].span = rows.length - i - 1;
+    }
+    const before = preview(left, e.left);
+    const after = preview(right, e.right);
+    const row: DiffRow = { kind: e.kind, depth, key: e.key, path: e.path, left: e.left, right: e.right, before: before?.text, beforeType: before?.type, after: after?.text, afterType: after?.type, span: 0, unchanged: e.unchanged };
+    if (e.kind === 'moved' && e.left >= 0) row.fromKey = left.key(e.left);
+    rows.push(row);
+    open.push(rows.length - 1);
+    const kids = e.children ?? [];
+    for (let i = kids.length - 1; i >= 0; i--) stack.push({ e: kids[i], depth: depth + 1 });
+  }
+  for (const i of open) rows[i].span = rows.length - i - 1;
+  return rows;
+}
+
 const api: WorkerApi = {
-  async load({ bytes, text, format, name: n }) {
-    const excel = (format ?? detectFormat(n)) === 'xlsx' && bytes;
-    const src = excel ? await xlsxToJson(new Uint8Array(bytes), inflateRaw) : (text ?? (bytes ? decodeText(new Uint8Array(bytes)) : ''));
-    const fmt = excel ? 'xlsx' : (format ?? detectFormat(n, undefined, src.slice(0, 64 * 1024)) ?? 'json');
-    tree = parseData(src, fmt);
-    sourceBytes = bytes?.byteLength ?? 0;
-    name = n;
+  async load(args) {
+    tree = await parseInput(args);
+    sourceBytes = args.bytes?.byteLength ?? 0;
+    name = args.name;
     tableOrder = null;
     return summary();
+  },
+  async loadOther(args) {
+    other = await parseInput(args);
+    return { name: args.name, format: other.format, nodes: other.nodeCount(), errors: other.errors.filter((e) => e.severity !== 'warning').length };
+  },
+  clearOther() {
+    other = null;
+  },
+  diff({ arrays, ignoreOrder }) {
+    const right = need();
+    if (!other) throw new Error('Nothing to compare with yet.');
+    const r = diffTrees(other, right, { arrays, ignoreOrder });
+    return { rows: diffRows(r.root, other, right), stats: r.stats, truncated: r.truncated, ms: r.ms, same: r.root.kind === 'same' };
+  },
+  diffText({ arrays, ignoreOrder }) {
+    const right = need();
+    if (!other) throw new Error('Nothing to compare with yet.');
+    return diffToText(diffTrees(other, right, { arrays, ignoreOrder }), other, right);
   },
   summary,
   node: ({ id }) => info(need(), id),
@@ -249,15 +293,20 @@ const api: WorkerApi = {
     const t = need();
     const base = info(t, id);
     let value: string;
-    if (t.isContainer(id)) value = t.toJSON(id, 2, maxChars + 1);
-    else value = t.type[id] === T_STRING ? t.stringValue(id) : t.rawValue(id);
-    const truncated = value.length > maxChars;
+    let truncated: boolean;
+    // Containers: the first maxChars characters of their complete JSON (written no further than that).
+    if (t.isContainer(id)) ({ text: value, truncated } = t.jsonText(id, 2, maxChars));
+    else {
+      value = t.type[id] === T_STRING ? t.stringValue(id) : t.rawValue(id);
+      truncated = value.length > maxChars;
+      if (truncated) value = value.slice(0, maxChars);
+    }
     const d: NodeDetail = {
       ...base,
       path: t.pathString(id),
       segments: t.path(id),
       depth: t.depth(id),
-      value: truncated ? value.slice(0, maxChars) : value,
+      value,
       valueTruncated: truncated,
       descendants: t.size[id] - 1,
       parent: t.parent[id],
@@ -313,22 +362,11 @@ const api: WorkerApi = {
       if (tableOrder && tableOrder.id === id && tableOrder.key === key) order = tableOrder.order;
       else {
         let ids = t.children(id);
-        if (filter) {
-          const f = filter.toLowerCase();
-          ids = ids.filter((r) => {
-            if (!t.isContainer(r)) return t.preview(r, 400).toLowerCase().includes(f) || String(t.key(r)).toLowerCase().includes(f);
-            for (let c = t.firstChild(r); c >= 0; c = t.nextSibling(c)) if (t.preview(c, 400).toLowerCase().includes(f)) return true;
-            return false;
-          });
-        }
+        if (filter) ids = filterRows(t, ids, filter);
         if (sort) {
-          const keys = new Map(ids.map((r) => [r, tabular ? sortKey(t, r, sort.column) : sort.column === 'key' ? String(t.key(r)) : (t.value(r) as string | number) ?? '']));
-          ids.sort((a, b) => {
-            const ka = keys.get(a)!;
-            const kb = keys.get(b)!;
-            const c = typeof ka === 'number' && typeof kb === 'number' ? ka - kb : String(ka).localeCompare(String(kb), undefined, { numeric: true });
-            return sort.desc ? -c : c;
-          });
+          const hint = { index: 0 };
+          const keys = ids.map((r): SortKey => (tabular ? cellKey(t, r, sort.column, hint) : sort.column === 'key' ? t.key(r) : valueKey(t, r)));
+          ids = sortRows(ids, keys, sort.desc);
         }
         order = Uint32Array.from(ids);
         tableOrder = { id, key, order };
@@ -342,10 +380,74 @@ const api: WorkerApi = {
     };
   },
   nodeAtOffset: ({ offset }) => need().nodeAtOffset(offset),
+  convert: ({ id, to }) => convertTree(need(), id, to),
+  types: ({ id, target, rootName }) => generateTypes(inferSchema(need(), id), target, { rootName }),
+  schemaRef: () => schemaUriOf(need()) ?? null,
+  validate({ schema, refs }) {
+    const t = need();
+    const parse = (text: string): unknown => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return parseYaml(text);
+      }
+    };
+    const docs = new Map<string, unknown>();
+    const missing = new Set<string>();
+    const r = validateTree(t, parse(schema), {
+      // $ref'd documents the page fetched; the rest are reported so it can fetch them and try again.
+      resolve: (uri) => {
+        const key = uri.replace(/#.*$/, '');
+        if (!docs.has(key)) {
+          if (refs[key] === undefined) {
+            missing.add(key);
+            return undefined;
+          }
+          docs.set(key, parse(refs[key]));
+        }
+        return docs.get(key);
+      },
+    });
+    return { valid: r.valid, errors: r.errors.map(({ id, path, keyword, message }) => ({ id, path, keyword, message })), truncated: r.truncated, unsupported: r.unsupported, missing: [...missing] };
+  },
+  editCaps: ({ id }) => editCaps(need(), id),
+  edits({ op }) {
+    const t = need();
+    return editsFor(t, op).map((e) => {
+      const from = Math.max(0, e.offset - 24);
+      return { ...e, check: { from, text: t.text.slice(from, e.offset + e.length) } };
+    });
+  },
+  pathsOf: ({ ids }) => ids.map((id) => need().path(id)),
+  idsOf({ paths }) {
+    const t = need();
+    // Objects with many keys get a key index, built once per call.
+    const index = new Map<number, Map<string | number, number>>();
+    const child = (id: number, seg: PathSegment): number => {
+      if (typeof seg === 'number' && t.type[id] === T_ARRAY) return t.childAt(id, seg);
+      if (t.childCount[id] > 32) {
+        let m = index.get(id);
+        if (!m) {
+          m = new Map();
+          for (let c = t.firstChild(id); c >= 0; c = t.nextSibling(c)) if (!m.has(t.key(c)!)) m.set(t.key(c)!, c);
+          index.set(id, m);
+        }
+        return m.get(seg) ?? -1;
+      }
+      for (let c = t.firstChild(id); c >= 0; c = t.nextSibling(c)) if (t.key(c) === seg) return c;
+      return -1;
+    };
+    return paths.map((segs) => {
+      let id = t.root;
+      for (const seg of segs) if (id < 0 || !t.isContainer(id) || (id = child(id, seg)) < 0) return -1;
+      return id;
+    });
+  },
   nodeAtLine({ line, col }) {
     const t = need();
     return t.nodeAtOffset(t.offsetOf(line, col));
   },
+  // Complete JSON, or an error saying the node is larger than maxChars (never a cut-off copy).
   json: ({ id, indent, maxChars }) => need().toJSON(id, indent ?? 2, maxChars),
   text({ maxChars }) {
     const t = need();

@@ -4,6 +4,7 @@ import { useEffect } from 'preact/hooks';
 import type { InitPayload, ViewId } from '../shared/protocol';
 import { runCommand } from './commands';
 import { Icon } from './components/icons';
+import { Shortcuts } from './components/Shortcuts';
 import { StatusBar } from './components/StatusBar';
 import { Toolbar, VIEWS } from './components/Toolbar';
 import { app, host, setSearch, useStore } from './store';
@@ -38,7 +39,9 @@ function applyInit(p: InitPayload): void {
     loading: null,
     crumb: '',
     status: '',
-    search: { query: '', path: false, total: 0, index: -1, busy: false },
+    validationErrors: null,
+    // A new document keeps the search options but not the query.
+    search: { ...app.get().search, query: '', path: false, total: 0, truncated: false, index: -1, busy: false, error: undefined },
     ...fittingPanels(p.mode, window.innerWidth),
   });
   document.title = p.target ? `${p.target.name} — StructLens` : 'StructLens';
@@ -49,6 +52,7 @@ export function App() {
   const init = useStore(app, (s) => s.init);
   const mode = useStore(app, (s) => s.mode);
   const toast = useStore(app, (s) => s.toast);
+  const shortcutsOpen = useStore(app, (s) => s.shortcutsOpen);
   const themeSetting = useStore(app, (s) => s.settings.theme);
 
   // Host events.
@@ -68,6 +72,7 @@ export function App() {
           const s = app.get();
           if (e.view && VIEWS[s.mode].some((v) => v.id === e.view)) app.set({ view: e.view });
           if (e.query !== undefined) setSearch({ query: e.query });
+          if (e.compare) window.dispatchEvent(new CustomEvent('structlens:compare', { detail: e.compare }));
           if (e.symbol !== undefined || e.line !== undefined) window.dispatchEvent(new CustomEvent('structlens:navigate', { detail: e }));
           break;
         }
@@ -156,6 +161,13 @@ export function App() {
         case 'D':
           runCommand('toggleDirection');
           break;
+        case 'l':
+        case 'L':
+          runCommand('toggleEdgeLabels');
+          break;
+        case '?':
+          app.set({ shortcutsOpen: true });
+          break;
         case 'r':
         case 'R':
           runCommand('refresh');
@@ -203,6 +215,7 @@ export function App() {
         </main>
       )}
       <StatusBar />
+      {shortcutsOpen && <Shortcuts mode={mode} onClose={() => app.set({ shortcutsOpen: false })} />}
       {toast && (
         <div class={`toast ${toast.kind}`} key={toast.id} role="status">
           <Icon name={toast.kind === 'error' ? 'alert' : 'check'} />

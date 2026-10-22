@@ -4,8 +4,8 @@
  * hover/selection/search highlighting, a minimap and PNG/SVG export.
  */
 
-import { curveBetween, drawEdge, drawNode, fontMono, FONT_SIZE, type DrawContext, type EdgeGeometry } from './draw';
-import { HEADER_H, ROW_H, type Scene, type SceneEdge, type SceneNode } from './scene';
+import { curveBetween, drawEdge, drawNode, edgeLabelPoint, fontMono, FONT_SIZE, rowPortY, truncateChars, type DrawContext, type EdgeGeometry } from './draw';
+import { EDGE_LABEL_CHARS, EDGE_LABEL_H, edgeLabelWidth, HEADER_H, ROW_H, type Scene, type SceneEdge, type SceneNode } from './scene';
 import { SpatialGrid } from './spatial';
 import { readPalette, resolveColor, withAlpha, type Palette } from './theme';
 
@@ -21,7 +21,7 @@ export interface ViewEvents {
   onViewport?(k: number): void;
 }
 
-interface Camera {
+export interface Camera {
   k: number;
   tx: number;
   ty: number;
@@ -60,7 +60,9 @@ export class GraphView {
   private raf = 0;
   private hover: { key: string; row: number } | null = null;
   private selected = new Set<string>();
+  private selectedRow: { key: string; row: number } | null = null;
   private matches = new Set<string>();
+  private errors = new Set<string>();
   private minimapImage: HTMLCanvasElement | null = null;
   private resizeObs: ResizeObserver;
   /** Re-applies the automatic framing on resize until the user moves the camera. */
@@ -122,6 +124,16 @@ export class GraphView {
 
   get zoom(): number {
     return this.cam.k;
+  }
+
+  /** Current pan/zoom (to restore a view later). */
+  get camera(): Camera {
+    return { ...this.cam };
+  }
+
+  set camera(c: Camera) {
+    this.reframe = null;
+    this.moveCamera({ k: clamp(c.k, MIN_K, MAX_K), tx: c.tx, ty: c.ty }, false);
   }
 
   getScene(): Scene {
@@ -196,7 +208,9 @@ export class GraphView {
       y1 = Math.max(y1, pts[i + 1]);
     }
     if (!isFinite(x0)) return { x: 0, y: 0, w: 0, h: 0 };
-    return { x: x0 - 20, y: y0 - 20, w: x1 - x0 + 40, h: y1 - y0 + 40 };
+    // Labels can stick out sideways from steep edges.
+    const pad = 20 + (e.label ? edgeLabelWidth(e.label, this.charW) / 2 : 0);
+    return { x: x0 - pad, y: y0 - 20, w: x1 - x0 + pad * 2, h: y1 - y0 + 40 };
   }
 
   private edgeGeometry(e: SceneEdge, pos?: (key: string) => SceneNode | undefined): EdgeGeometry {
@@ -217,6 +231,36 @@ export class GraphView {
 
   setSelection(keys: Iterable<string> | string | null): void {
     this.selected = new Set(keys === null ? [] : typeof keys === 'string' ? [keys] : keys);
+    this.invalidate();
+  }
+
+  /** Highlights one row of a card (keyboard / row selection). */
+  setSelectedRow(key: string | null, row = -1): void {
+    this.selectedRow = key === null || row < 0 ? null : { key, row };
+    this.invalidate();
+  }
+
+  /** Pans (without zooming) just enough to bring a node's row, or its top, into view. */
+  reveal(key: string, row = -1, animate = true): void {
+    const n = this.byKey.get(key);
+    if (!n || !this.width) return;
+    const { k, tx, ty } = this.cam;
+    const top = row >= 0 && n.rows ? rowPortY(n, row) - ROW_H / 2 : n.y;
+    const bottom = row >= 0 && n.rows ? top + ROW_H : n.y + Math.min(n.h, HEADER_H + ROW_H * 3);
+    const right = n.x + Math.min(n.w, this.width / k - 80 / k);
+    const margin = 40;
+    const shift = (lo: number, hi: number, size: number) => (lo < margin ? margin - lo : hi > size - margin ? Math.max(size - margin - hi, margin - lo) : 0);
+    const dx = shift(n.x * k + tx, right * k + tx, this.width);
+    const dy = shift(top * k + ty, bottom * k + ty, this.height);
+    if (dx || dy) {
+      this.reframe = null;
+      this.moveCamera({ k, tx: tx + dx, ty: ty + dy }, animate);
+    }
+  }
+
+  /** Nodes outlined as invalid (schema validation). */
+  setErrors(keys: Iterable<string>): void {
+    this.errors = new Set(keys);
     this.invalidate();
   }
 
@@ -436,8 +480,10 @@ export class GraphView {
       charW: this.charW,
       hoverKey: this.hover?.key,
       hoverRow: this.hover?.row,
+      selectedRow: this.selectedRow ?? undefined,
       selected: this.selected,
       matches: this.matches,
+      errors: this.errors,
       related,
       dimOthers: false,
     };
@@ -710,7 +756,7 @@ export class GraphView {
     const s = this.scene;
     const p = this.palette;
     const pad = 32;
-    const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const out: string[] = [];
     out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${s.width + pad * 2}" height="${s.height + pad * 2}" viewBox="${-pad} ${-pad} ${s.width + pad * 2} ${s.height + pad * 2}" font-family="${esc(p.monoFont)}" font-size="${FONT_SIZE}">`);
     out.push(`<rect x="${-pad}" y="${-pad}" width="${s.width + pad * 2}" height="${s.height + pad * 2}" fill="${p.bg}"/>`);
@@ -723,9 +769,12 @@ export class GraphView {
       const dash = e.style === 'dashed' ? ' stroke-dasharray="6 5"' : e.style === 'dotted' ? ' stroke-dasharray="2 4"' : '';
       out.push(`<path d="${d}" fill="none" stroke="${resolveColor(p, e.color, p.edge)}" stroke-width="${e.width ?? 1.3}"${dash}${e.arrow !== false ? ' marker-end="url(#arrow)"' : ''}/>`);
       if (e.label) {
-        const lx = g.curve ? (g.pts[0] + g.pts[6]) / 2 : (g.pts[0] + g.pts[2]) / 2;
-        const ly = g.curve ? (g.pts[1] + g.pts[7]) / 2 : (g.pts[1] + g.pts[3]) / 2;
-        out.push(`<text x="${lx}" y="${ly}" text-anchor="middle" font-size="10.5" fill="${resolveColor(p, e.color, p.muted)}">${esc(e.label)}</text>`);
+        const [lx, ly] = edgeLabelPoint(e, g);
+        const text = truncateChars(e.label, EDGE_LABEL_CHARS);
+        const lw = edgeLabelWidth(text, this.charW);
+        const color = resolveColor(p, e.color, p.edge);
+        out.push(`<rect x="${lx - lw / 2}" y="${ly - EDGE_LABEL_H / 2}" width="${lw}" height="${EDGE_LABEL_H}" rx="8" fill="${p.bg}" stroke="${withAlpha(color, 0.8)}"/>`);
+        out.push(`<text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="central" font-size="10.5" font-weight="500" fill="${color}">${esc(text)}</text>`);
       }
     }
     for (const n of s.nodes) {
@@ -747,7 +796,11 @@ export class GraphView {
         n.rows.forEach((row, i) => {
           const y = ty + i * ROW_H + ROW_H / 2 + 4;
           const key = row.key !== undefined ? `<tspan fill="${resolveColor(p, row.keyColor, p.colors.key)}">${esc(row.key)}</tspan>${row.value !== undefined ? `<tspan fill="${p.faint}">: </tspan>` : ''}` : '';
-          const val = row.value !== undefined ? `<tspan fill="${resolveColor(p, row.valueColor, p.text)}">${esc(row.value)}</tspan>` : '';
+          const val = row.value !== undefined ? `<tspan fill="${resolveColor(p, row.valueColor, p.text)}">${row.swatch ? '\u00A0\u00A0' : ''}${esc(row.value)}</tspan>` : '';
+          if (row.swatch) {
+            const sx = n.x + 10 + ((row.icon ? row.icon.length + 1 : 0) + (row.key !== undefined ? row.key.length + 2 : 0)) * this.charW;
+            out.push(`<rect x="${sx}" y="${y - 9}" width="10" height="10" rx="2.5" fill="${esc(row.swatch)}" stroke="${withAlpha(p.text, 0.3)}"/>`);
+          }
           out.push(`<text x="${n.x + 10}" y="${y}">${row.icon ? `<tspan fill="${resolveColor(p, row.iconColor, p.muted)}">${esc(row.icon)} </tspan>` : ''}${key}${val}</text>`);
         });
       } else if (n.lines || n.title) {

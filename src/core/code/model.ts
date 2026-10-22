@@ -63,7 +63,7 @@ export interface CodeSymbol {
   doc?: string;
   children?: CodeSymbol[];
   params?: string[];
-  /** Callables: approximate cyclomatic complexity. */
+  /** Callables: cyclomatic complexity, decision points + 1 (see `complexity()` in spec.ts). */
   complexity?: number;
   /** Callables: outgoing calls. */
   calls?: CallRef[];
@@ -149,7 +149,7 @@ export interface FlowGraph {
   signature?: string;
   nodes: FlowNode[];
   edges: FlowEdge[];
-  /** Cyclomatic complexity (decisions + 1). */
+  /** Cyclomatic complexity, the same count as the outline's `CodeSymbol.complexity`. */
   complexity: number;
   range: Range;
 }
@@ -213,6 +213,8 @@ export interface CallGraph {
   edges: CallGraphEdge[];
   /** Files that were analysed. */
   files: string[];
+  /** More files matched than the file limit allows: only the first `files.length` were analysed. */
+  truncated?: boolean;
 }
 
 /** Flow and data flow of one function (or of a file's top-level code). */

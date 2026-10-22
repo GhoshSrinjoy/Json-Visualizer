@@ -88,3 +88,45 @@ export class VsCodeHost extends BaseHost {
     return this.api.getState();
   }
 }
+
+/** Opens http(s)/mailto links in a new tab; other schemes are ignored. */
+export function openWebLink(url: string): void {
+  if (/^(?:https?:|mailto:)/i.test(url)) window.open(url, '_blank', 'noopener');
+}
+
+/** Lets the user pick a text file in the browser (null when cancelled). */
+export function pickTextFile(accept: string): Promise<{ ref: string; text: string } | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept;
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      resolve(f ? { ref: f.name, text: await f.text() } : null);
+    };
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+}
+
+/** Lets the user pick a data file in the browser (null when cancelled). */
+export function pickDataFile(): Promise<{ name: string; bytes: Uint8Array } | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      resolve(f ? { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) } : null);
+    };
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+}
+
+/** Downloads a schema in the browser (only http(s); the server or editor handles local paths). */
+export async function fetchSchema(ref: string): Promise<{ ref: string; text: string }> {
+  const url = ref.replace(/#.*$/, '');
+  const res = await fetch(url, { headers: { accept: 'application/schema+json, application/json, */*' } });
+  if (!res.ok) throw new Error(`Could not download ${url}: HTTP ${res.status}`);
+  return { ref: url, text: await res.text() };
+}

@@ -2,7 +2,7 @@
   "name": "structlens",
   "displayName": "StructLens — JSON, YAML, XML, Code Flow & Repo Visualizer",
   "description": "Fast interactive graphs for JSON/YAML/XML/TOML/CSV, logic & data-flow diagrams for code, and whole-repo maps — plus an MCP server so Claude Code, Codex, Copilot and other AI agents can see the same structures.",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "publisher": "GhoshSrinjoy",
   "author": "Srinjoy Ghosh",
   "license": "MIT",
@@ -57,9 +57,14 @@
   },
   "main": "./dist/extension.js",
   "files": [
-    "dist",
-    "media/*.png",
-    "media/*.svg",
+    "dist/extension.js",
+    "dist/features.js",
+    "dist/cli.js",
+    "dist/wasm",
+    "dist/webview/*.{js,css,woff2}",
+    "media/icon.png",
+    "media/tab-dark.svg",
+    "media/tab-light.svg",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -90,6 +95,11 @@
       {
         "command": "structlens.openFile",
         "title": "Visualize with StructLens",
+        "category": "StructLens"
+      },
+      {
+        "command": "structlens.compareWith",
+        "title": "Compare With…",
         "category": "StructLens"
       },
       {
@@ -173,6 +183,11 @@
           "command": "structlens.openFile",
           "when": "!explorerResourceIsFolder",
           "group": "navigation@90"
+        },
+        {
+          "command": "structlens.compareWith",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.(json|jsonc|json5|jsonl|ndjson|geojson|ya?ml|toml|xml|csv|tsv|xlsx|xlsm|ini|env|properties)$/i",
+          "group": "navigation@92"
         },
         {
           "command": "structlens.openFolder",
@@ -313,6 +328,16 @@
           "default": 50,
           "minimum": 10,
           "description": "Rows listed per card before “show more” (large arrays are paged)."
+        },
+        "structlens.graph.edgeLabels": {
+          "type": "boolean",
+          "default": true,
+          "description": "Label the edges of data graphs with the key they lead to (`users`, `[0]`, `<item>`)."
+        },
+        "structlens.data.autoValidate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Validate data files against a JSON Schema when they open: the file's own `$schema` (a path or URL), or a schema associated with it in `json.schemas` / `yaml.schemas`. Remote schemas follow `json.schemaDownload.enable`."
         },
         "structlens.animations": {
           "type": "boolean",
@@ -696,6 +721,194 @@
           },
           "required": [
             "path"
+          ]
+        }
+      },
+      {
+        "name": "structlens_data_validate",
+        "toolReferenceName": "dataValidate",
+        "displayName": "StructLens: Validate against a JSON Schema",
+        "modelDescription": "Checks a JSON/YAML/TOML/CSV/XML/Excel file against a JSON Schema (drafts 4, 6, 7, 2019-09, 2020-12, with $ref across files): the document's own $schema, or the schema you name (a workspace path or an http(s) URL). Lists each error with its JSONPath, line and message, or says the file is valid.",
+        "userDescription": "Checks a JSON/YAML/TOML/CSV/XML/Excel file against a JSON Schema (drafts 4, 6, 7, 2019-09, 2020-12, with $ref across files): the document's own $schema, or the schema you name (a workspace path or an http(s) URL).",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(graph)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Data file path"
+            },
+            "schema": {
+              "description": "Schema: a path (relative to the data file) or URL. Default: the document's $schema",
+              "type": "string"
+            },
+            "maxErrors": {
+              "description": "Errors to list (default 200)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "structlens_data_diff",
+        "toolReferenceName": "dataDiff",
+        "displayName": "StructLens: Compare two data files",
+        "modelDescription": "Structural diff of two data files, in any formats (JSON against YAML works): what was added, removed, changed (old → new) or moved, with JSONPaths. Key order and formatting are ignored and arrays of records are matched by their ids. Use it to review config, fixture or API-response changes.",
+        "userDescription": "Structural diff of two data files, in any formats (JSON against YAML works): what was added, removed, changed (old → new) or moved, with JSONPaths.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(graph)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "left": {
+              "type": "string",
+              "description": "The original file"
+            },
+            "right": {
+              "type": "string",
+              "description": "The changed file"
+            },
+            "arrays": {
+              "description": "Array matching: auto (by id, else by content; default), lcs (by content), index (by position)",
+              "type": "string",
+              "enum": [
+                "auto",
+                "index",
+                "lcs"
+              ]
+            },
+            "ignoreOrder": {
+              "description": "Treat arrays as unordered",
+              "type": "boolean"
+            },
+            "maxLines": {
+              "description": "Change lines to list (default 400)",
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "left",
+            "right"
+          ]
+        }
+      },
+      {
+        "name": "structlens_data_types",
+        "toolReferenceName": "dataTypes",
+        "displayName": "StructLens: Generate types from data",
+        "modelDescription": "Type declarations inferred from a data file (or the subtree at a JSONPath) for TypeScript, Zod, Python (Pydantic), Go, Rust (serde), C#, Kotlin, Swift or Java (Jackson): nested types named after their keys, optional and nullable fields, maps for dynamic keys, integer sizes from the observed values, and renames for keys that are not identifiers.",
+        "userDescription": "Type declarations inferred from a data file (or the subtree at a JSONPath) for TypeScript, Zod, Python (Pydantic), Go, Rust (serde), C#, Kotlin, Swift or Java (Jackson): nested types named after their keys, optional and nullable fields, maps for dynamic keys, integer sizes from the observed values, and renames for keys that are not identifiers.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(graph)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Data file path"
+            },
+            "language": {
+              "description": "Target language (default typescript)",
+              "type": "string",
+              "enum": [
+                "typescript",
+                "zod",
+                "python",
+                "go",
+                "rust",
+                "csharp",
+                "kotlin",
+                "swift",
+                "java"
+              ]
+            },
+            "at": {
+              "description": "JSONPath of the subtree to type, e.g. $.data",
+              "type": "string"
+            },
+            "name": {
+              "description": "Name of the top-level type (default: from the file name)",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "structlens_data_convert",
+        "toolReferenceName": "dataConvert",
+        "displayName": "StructLens: Convert a data file",
+        "modelDescription": "A data file (or the subtree at a JSONPath) as YAML, TOML, CSV, TSV, XML or JSON Lines. Arrays of records become CSV rows, with nested objects flattened into dotted columns. Large integers keep all their digits.",
+        "userDescription": "A data file (or the subtree at a JSONPath) as YAML, TOML, CSV, TSV, XML or JSON Lines.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(graph)",
+        "tags": [
+          "structlens",
+          "structure",
+          "code",
+          "data"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Data file path"
+            },
+            "to": {
+              "type": "string",
+              "enum": [
+                "yaml",
+                "toml",
+                "csv",
+                "tsv",
+                "xml",
+                "jsonl"
+              ],
+              "description": "Target format"
+            },
+            "at": {
+              "description": "JSONPath of the part to convert",
+              "type": "string"
+            },
+            "maxChars": {
+              "description": "Truncate longer output (default 200000 for agents; 0 = no limit)",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "to"
           ]
         }
       },

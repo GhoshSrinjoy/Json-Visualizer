@@ -1,7 +1,7 @@
 /** Host backed by the CLI's local web server (`structlens open`). */
 
 import type { HostEvent, InitPayload, RequestMap, RequestName } from '../../shared/protocol';
-import { BaseHost } from './host';
+import { BaseHost, openWebLink, pickDataFile, pickTextFile } from './host';
 
 export class ServerHost extends BaseHost {
   kind = 'server' as const;
@@ -33,6 +33,12 @@ export class ServerHost extends BaseHost {
       const { name, data, mime } = params as RequestMap['saveFile']['params'];
       download(name, data, mime);
       return { saved: true } as RequestMap[K]['result'];
+    }
+    if (method === 'pickDataFile') return (await pickDataFile()) as RequestMap[K]['result'];
+    if (method === 'pickSchema') return (await pickTextFile('.json,.yaml,.yml,application/json')) as RequestMap[K]['result'];
+    if (method === 'openExternal') {
+      openWebLink((params as RequestMap['openExternal']['params']).url);
+      return undefined as RequestMap[K]['result'];
     }
     if (method === 'copyText') {
       await navigator.clipboard.writeText((params as RequestMap['copyText']['params']).text);

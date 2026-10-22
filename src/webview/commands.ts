@@ -14,17 +14,20 @@ export type CommandId =
   | 'expandAll'
   | 'collapseAll'
   | 'toggleDirection'
+  | 'toggleEdgeLabels'
   | 'exportPng'
   | 'exportSvg'
   | 'exportJson'
   | 'exportMermaid'
+  /** Data documents: save the selection (or the document) in another format; the argument is a ConvertTarget. */
+  | 'exportAs'
   | 'copyImage'
   | 'searchNext'
   | 'searchPrev'
   | 'reveal'
   | 'refresh';
 
-type Handler = () => void | Promise<void>;
+type Handler = (arg?: string) => void | Promise<void>;
 const handlers = new Map<CommandId, Handler>();
 
 function publish(): void {
@@ -45,9 +48,9 @@ export function registerCommands(map: Partial<Record<CommandId, Handler | undefi
   };
 }
 
-export function runCommand(id: CommandId): boolean {
+export function runCommand(id: CommandId, arg?: string): boolean {
   const h = handlers.get(id);
   if (!h) return false;
-  void h();
+  void h(arg);
   return true;
 }
